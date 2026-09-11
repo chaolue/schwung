@@ -719,6 +719,27 @@ export function drawFilter(ctx, rect, roles, values, metaIndex) {
 
 /* -------------------------------------------------------------------- lfo */
 
+/*
+ * Shapes Schwung draws that movy's table has no id for.
+ *
+ * The ids below are movy's `shapeSample` numbering, which is why swishy
+ * sits at 8 rather than at the 5 Schwung's own lfo_common.h gives it.
+ * These three are not in that table at all: an M8 LFO offers EXP DN, EXP
+ * UP and SQU UP, and lfoShapeIdOf matches whole words with a `return 0`
+ * fallback, so before this each of them silently drew a SINE — a
+ * different waveform saying nothing true about the modulation, and
+ * invisible as a bug because nothing failed.
+ *
+ * Numbered clear of movy's range (whose 11+ are synth-specific glyphs)
+ * so neither table has to know about the other.
+ */
+const LFO_SHAPE_EXP_DOWN = 100;
+const LFO_SHAPE_EXP_UP = 101;
+const LFO_SHAPE_SQUARE_UP = 102;
+
+/* See the exponential cases in lfoShapeSample. */
+const EXP_DECAY = 5;
+
 /** schwung-movy model/lfo-shapes.ts shapeSample ids 0-10 (the ones a Schwung
  * enum can realistically resolve to — the stepped N-level families and the
  * synth-specific glyphs 11+ are not reachable from a plain shape name here). */
@@ -757,6 +778,18 @@ export function lfoShapeSample(shape, t) {
             const a0 = at(c), a1 = at(c + 1);
             return a0 + (a1 - a0) * f;
         }
+        /*
+         * EXPONENTIAL, both directions. The decay constant is chosen for
+         * legibility rather than realism: at 13 rows tall a steeper curve
+         * collapses onto the axis for most of the cycle and reads as a
+         * flat line with a spike, while a shallower one is hard to tell
+         * from the ramp it is not.
+         */
+        case LFO_SHAPE_EXP_DOWN: return 2 * Math.exp(-EXP_DECAY * ph) - 1;
+        case LFO_SHAPE_EXP_UP: return 2 * Math.exp(-EXP_DECAY * (1 - ph)) - 1;
+        /* The mirror of case 3, which starts HIGH. Drawing SQU UP with
+         * that one would show the LFO high exactly when it is low. */
+        case LFO_SHAPE_SQUARE_UP: return ph < 0.5 ? -1 : 1;
         default: return Math.sin(ph * 2 * Math.PI);
     }
 }
@@ -766,9 +799,16 @@ function lfoShapeIdOf(text) {
     if (/^(sine|sin|skewedsine)$/.test(n)) return 0;
     if (/^(tri|triangle)$/.test(n)) return 1;
     if (/^(saw|sawtooth|rampup|softsaw|sawup|ramp)$/.test(n)) return 2;
-    if (/^(square|sqr|squ|rect|softsquare|pulse|pulsetr|warmpulse)$/.test(n)) return 3;
+    /* `squdn`/`squaredown` included because case 3 starts HIGH, which is
+     * exactly what M8 calls SQU DN. */
+    if (/^(square|sqr|squ|rect|softsquare|pulse|pulsetr|warmpulse|squdn|squaredown|sqrdown)$/.test(n)) return 3;
+    if (/^(squareup|squup|sqrup)$/.test(n)) return LFO_SHAPE_SQUARE_UP;
     if (/^(sh|samplehold|rnd1|s\+h)$/.test(n)) return 4;
-    if (/^(rampdown|sawdown)$/.test(n)) return 6;
+    /* `rampdn` is M8's own spelling, and missing it by two letters was
+     * enough to fall through to sine. */
+    if (/^(rampdown|sawdown|rampdn|sawdn)$/.test(n)) return 6;
+    if (/^(expdown|expdn|exponentialdown|expdecay)$/.test(n)) return LFO_SHAPE_EXP_DOWN;
+    if (/^(expup|exponentialup|exprise)$/.test(n)) return LFO_SHAPE_EXP_UP;
     if (/^(noise|rand|rnd|random|smoothrandom)$/.test(n)) return 7;
     /* Schwung's own sixth shape (src/host/lfo_common.h): a random WALK that
      * interpolates toward a fresh target each cycle. The smooth-random
