@@ -654,6 +654,31 @@ export function filterGainAt(u, mode, c, r, steep) {
     switch (mode) {
         case "hp": return u >= cx ? shoulder(u - cx) : ellipse(cx - u);
         case "bp": return Math.min(1, top * bump(u, cx, 5 + r * 4));
+        /*
+         * LP>HP is a lowpass whose RESONANCE knob sets the corner of a
+         * one-pole highpass, so the two controls are two independent
+         * corners and there is no resonance at all. It reached "bp"
+         * before, being a name with both lp and hp in it, and a bandpass
+         * is wrong in all three respects: one hump centred on the LOWPASS
+         * corner, narrowing as the second corner rises rather than moving
+         * with it, and carrying a resonant peak the filter does not have.
+         *
+         * The skirts are the same ellipse the lp and hp cases use, so
+         * this differs from its neighbours in SHAPE and not in treatment.
+         * `top` is deliberately not used: it carries the resonance peak.
+         * When the highpass corner passes the lowpass one the two skirts
+         * overlap and the min closes the band, which is what the filter
+         * itself does.
+         */
+        case "lphp": {
+            const hpx = EDGE + r * (1 - 2 * EDGE);
+            const skirt = (dist) => {
+                const t = dist / dropW;
+                return t >= 1 ? 0 : PASS * Math.sqrt(1 - t * t);
+            };
+            return Math.min(u > cx ? skirt(u - cx) : PASS,
+                            u < hpx ? skirt(hpx - u) : PASS);
+        }
         case "notch": return Math.max(0, PASS - PASS * (0.5 + 0.5 * r) * bump(u, cx, 7));
         case "peak": return Math.min(1, PASS * 0.7 + (0.3 + 0.6 * r) * (1 - PASS * 0.7) * bump(u, cx, 6));
         case "ap":
@@ -669,6 +694,9 @@ function filterModeOf(text) {
     const hasLP = /lowpass|low pass|\blp\d?\b/.test(s);
     const hasHP = /highpass|high pass|\bhp\d?\b/.test(s);
     if (/ladder/.test(s)) return hasHP ? "hp" : "lp";
+    /* Before the rule below, which would read this as a bandpass purely
+     * because the name contains both. */
+    if (/lp\s*>\s*hp|lowpass\s*>\s*highpass|lp2hp/.test(s)) return "lphp";
     if (hasLP && hasHP) return "bp";
     if (/notch|bandstop|band stop/.test(s)) return "notch";
     if (/bandpass|band pass|\bbpf\b/.test(s)) return "bp";
