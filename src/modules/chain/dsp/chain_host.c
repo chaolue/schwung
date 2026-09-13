@@ -231,6 +231,7 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_default_forward_channel = -1;
     inst->synth_last_note = -1;
     inst->synth_bypassed = 0;
+    inst->synth_requires_continuous = 0;
     memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
     inst->synth_split_voice_count = 0;
     /* Cleared with the handle it was resolved against: keeping it would leave a
@@ -683,6 +684,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
     inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
+    inst->synth_requires_continuous = 0;       /* Default: shim may park it on silence */
     /* Reset per synth load: a stale note from the previous module would name a
      * voice in a list that no longer exists. */
     inst->synth_last_note = -1;
@@ -770,6 +772,34 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                                 inst->synth_consumes_line_input = 1;
                                 v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
                             }
+                        }
+                    }
+                    /* Opt out of the shim's silence-skip, the same capability
+                     * the audio FX loader reads above — stateful generators
+                     * whose internal time must advance during silence.
+                     *
+                     * A LINE-INPUT CONSUMER GETS IT WITHOUT ASKING. The shim
+                     * parks a slot after ~1 s of silent OUTPUT and thereafter
+                     * renders one frame in 172, waking only on non-silent
+                     * probe output or on MIDI. A module whose output is the
+                     * jack has neither lever: the host never looks at the
+                     * input, and these modules take no MIDI. Parked, it drops
+                     * up to ~0.5 s off the front of every phrase and swallows
+                     * anything under DSP_SILENCE_LEVEL entirely, which is
+                     * indistinguishable from a noise gate that no module
+                     * setting can switch off. */
+                    {
+                        int cont = 0;
+                        if ((json_get_bool_in_section(json, "capabilities",
+                                                      "requires_continuous_processing", &cont) == 0
+                             || json_get_int_in_section(json, "capabilities",
+                                                        "requires_continuous_processing", &cont) == 0)
+                            && cont) {
+                            inst->synth_requires_continuous = 1;
+                        }
+                        if (inst->synth_consumes_line_input) inst->synth_requires_continuous = 1;
+                        if (inst->synth_requires_continuous) {
+                            v2_chain_log(inst, "Synth requires continuous processing (no silence-skip)");
                         }
                     }
                     /* Opt-in for raw SysEx, same both-spellings rule as
@@ -2861,6 +2891,19 @@ int chain_fx_requires_continuous(void *instance) {
         if (inst->fx_requires_continuous[i]) return 1;
     }
     return 0;
+}
+
+/* Exported: 1 if the SOUND GENERATOR in this slot must keep rendering through
+ * silence — see synth_requires_continuous in chain_internal.h. Read by the shim
+ * per SPI frame, exactly as chain_fx_requires_continuous is, but consulted on
+ * the generator idle gate rather than the FX one. Deliberately separate: an FX
+ * that needs continuous time does not imply the synth ahead of it does, and
+ * keeping both awake on one flag would park nothing and cost both renders. */
+__attribute__((visibility("default")))
+int chain_synth_requires_continuous(void *instance) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return 0;
+    return inst->synth_requires_continuous ? 1 : 0;
 }
 
 /* Called by the shim immediately after its silent-slot mod:tick. A true result
