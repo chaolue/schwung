@@ -39,8 +39,12 @@ awk '
 # 2. A line-input consumer gets the keep-alive WITHOUT declaring it. This is
 #    the part that makes the fix general: any module that pulls the jack in has
 #    no wake signal the shim can see, whatever its module.json says.
-grep -q 'if (inst->synth_consumes_line_input) inst->synth_requires_continuous = 1;' "$HOST" \
-  || fail "a line-input consumer is not implicitly kept alive"
+awk '
+  /inst->synth_consumes_line_input = 1;/ {branch=1}
+  branch && /inst->synth_requires_continuous = 1;/ {found=1; exit}
+  branch && /^                        \}/ {exit}
+  END {exit found ? 0 : 1}
+' "$HOST" || fail "a line-input consumer is not implicitly kept alive"
 
 # 3. Reset on unload, so a keep-alive module's flag cannot outlive it and hold
 #    the NEXT module in the slot permanently awake.

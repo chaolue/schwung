@@ -440,12 +440,9 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
                 if (mj_buf) {
                     size_t nr = fread(mj_buf, 1, mj_size, mj);
                     mj_buf[nr] = '\0';
-                    int cap = 0;
-                    if (json_get_int_in_section(mj_buf, "capabilities",
-                                                "requires_continuous_processing", &cap) == 0
-                        && cap) {
+                    if (json_get_flag_in_section(mj_buf, "capabilities",
+                                                 "requires_continuous_processing"))
                         inst->fx_requires_continuous[slot] = 1;
-                    }
                     free(mj_buf);
                 }
             }
@@ -770,48 +767,25 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                             }
                             if (strcmp(ctype, "audio_fx") != 0 && strcmp(ctype, "midi_fx") != 0) {
                                 inst->synth_consumes_line_input = 1;
+                                /* And therefore keep-alive: nothing the shim
+                                 * can see would ever wake it. */
+                                inst->synth_requires_continuous = 1;
                                 v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
                             }
                         }
                     }
-                    /* Opt out of the shim's silence-skip, the same capability
-                     * the audio FX loader reads above — stateful generators
-                     * whose internal time must advance during silence.
-                     *
-                     * A LINE-INPUT CONSUMER GETS IT WITHOUT ASKING. The shim
-                     * parks a slot after ~1 s of silent OUTPUT and thereafter
-                     * renders one frame in 172, waking only on non-silent
-                     * probe output or on MIDI. A module whose output is the
-                     * jack has neither lever: the host never looks at the
-                     * input, and these modules take no MIDI. Parked, it drops
-                     * up to ~0.5 s off the front of every phrase and swallows
-                     * anything under DSP_SILENCE_LEVEL entirely, which is
-                     * indistinguishable from a noise gate that no module
-                     * setting can switch off. */
-                    {
-                        int cont = 0;
-                        if ((json_get_bool_in_section(json, "capabilities",
-                                                      "requires_continuous_processing", &cont) == 0
-                             || json_get_int_in_section(json, "capabilities",
-                                                        "requires_continuous_processing", &cont) == 0)
-                            && cont) {
-                            inst->synth_requires_continuous = 1;
-                        }
-                        if (inst->synth_consumes_line_input) inst->synth_requires_continuous = 1;
-                        if (inst->synth_requires_continuous) {
-                            v2_chain_log(inst, "Synth requires continuous processing (no silence-skip)");
-                        }
-                    }
+                    /* Declared opt-out from the shim's silence-skip, the same
+                     * capability the FX loader reads; chain_internal.h has the
+                     * why, and the implicit line-input case is set above. */
+                    if (json_get_flag_in_section(json, "capabilities",
+                                                 "requires_continuous_processing"))
+                        inst->synth_requires_continuous = 1;
+                    if (inst->synth_requires_continuous)
+                        v2_chain_log(inst, "Synth keep-alive: exempt from silence-skip");
                     /* Opt-in for raw SysEx, same both-spellings rule as
                      * the MIDI FX path in chain_midi.c. */
-                    {
-                        int wants = 0;
-                        if ((json_get_bool_in_section(json, "capabilities", "wants_sysex", &wants) == 0
-                             || json_get_int_in_section(json, "capabilities", "wants_sysex", &wants) == 0)
-                            && wants) {
-                            inst->synth_wants_sysex = 1;
-                        }
-                    }
+                    if (json_get_flag_in_section(json, "capabilities", "wants_sysex"))
+                        inst->synth_wants_sysex = 1;
                     free(json);
                 }
             }
@@ -2893,17 +2867,14 @@ int chain_fx_requires_continuous(void *instance) {
     return 0;
 }
 
-/* Exported: 1 if the SOUND GENERATOR in this slot must keep rendering through
- * silence — see synth_requires_continuous in chain_internal.h. Read by the shim
- * per SPI frame, exactly as chain_fx_requires_continuous is, but consulted on
- * the generator idle gate rather than the FX one. Deliberately separate: an FX
- * that needs continuous time does not imply the synth ahead of it does, and
- * keeping both awake on one flag would park nothing and cost both renders. */
+/* Exported: 1 if the SOUND GENERATOR here must keep rendering through silence
+ * (see synth_requires_continuous in chain_internal.h). Separate from the FX
+ * answer: an FX needing continuous time does not imply the synth ahead of it
+ * does, and one flag for both would park neither. */
 __attribute__((visibility("default")))
 int chain_synth_requires_continuous(void *instance) {
     chain_instance_t *inst = (chain_instance_t *)instance;
-    if (!inst) return 0;
-    return inst->synth_requires_continuous ? 1 : 0;
+    return inst ? (inst->synth_requires_continuous ? 1 : 0) : 0;
 }
 
 /* Called by the shim immediately after its silent-slot mod:tick. A true result
