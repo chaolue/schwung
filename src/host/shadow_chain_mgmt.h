@@ -655,4 +655,13 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
 int shadow_param_publish_response(uint32_t req_id);
 void shadow_inprocess_handle_param_request(void);
 
+/* --- External chain-slot access (dlsym'd export) ---
+ *
+ * Declared here for the shim's own use; a module in a DIFFERENT dlopen'd
+ * .so (an overtake DSP, or another chain sub-plugin) cannot see this header
+ * and instead finds these two by name — see the doc comment above their
+ * definition in shadow_chain_mgmt.c for the dlsym contract. */
+int schwung_chain_slot_get_param(int slot, const char *key, char *buf, int buf_len);
+int schwung_chain_slot_set_param(int slot, const char *key, const char *value);
+
 #endif /* SHADOW_CHAIN_MGMT_H */

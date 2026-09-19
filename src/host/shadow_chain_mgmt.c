@@ -2993,6 +2993,55 @@ int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_l
     return -1;
 }
 
+/* ============================================================================
+ * External chain-slot access (dlsym'd export)
+ * ============================================================================
+ *
+ * Any module the shim has dlopen'd into this process — a chain synth/FX/
+ * MIDI-FX instance, or an overtake DSP — can reach a DIFFERENT chain slot's
+ * own config (its receive channel, volume, mute, solo, transpose) through
+ * these two functions, found with:
+ *
+ *   int (*get)(int, const char *, char *, int) =
+ *       dlsym(RTLD_DEFAULT, "schwung_chain_slot_get_param");
+ *   int (*set)(int, const char *, const char *) =
+ *       dlsym(RTLD_DEFAULT, "schwung_chain_slot_set_param");
+ *
+ * A dlsym'd export ON PURPOSE, not a host_api_v1_t field — see the ABI-freeze
+ * comment on host_api_v1_t::reserved in plugin_api_v1.h: a struct field here
+ * is exactly the shape of the incident that comment documents. NULL on a
+ * shim build older than this export; callers must guard.
+ *
+ * Ordinary C calls on the caller's own thread — no IPC, no shared-memory
+ * round trip, no wait — so this is exactly as real-time-safe as calling any
+ * other local function, including from the SPI callback (see the threading
+ * contract at the top of plugin_api_v1.h).
+ *
+ * slot is 0..SHADOW_CHAIN_INSTANCES-1; anything else is rejected (0 / -1)
+ * rather than read or written out of bounds. key is one of "slot:volume",
+ * "slot:muted", "slot:soloed", "slot:forward_channel", "slot:receive_channel",
+ * "slot:transpose" — the same keys the native chain UI and schwung-manager's
+ * web UI already use, so a set through here is indistinguishable from an
+ * edit made through either of those.
+ *
+ * get returns the length written into buf (like get_param elsewhere), or -1
+ * on an unknown key or out-of-range slot/args. set returns 1 if handled, 0
+ * otherwise, and — like the web-ring path in shadow_direct_set_param below —
+ * notifies schwung-manager's web UI of the change on success. */
+int schwung_chain_slot_get_param(int slot, const char *key, char *buf, int buf_len) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return -1;
+    if (!key || !buf || buf_len <= 0) return -1;
+    return shadow_handle_slot_param_get(slot, key, buf, buf_len);
+}
+
+int schwung_chain_slot_set_param(int slot, const char *key, const char *value) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return 0;
+    if (!key || !value) return 0;
+    if (!shadow_handle_slot_param_set(slot, key, value)) return 0;
+    if (host.on_param_changed) host.on_param_changed((uint8_t)slot, key, value);
+    return 1;
+}
+
 /* Direct set_param without touching shadow_param_t shared memory.
  * Called from web UI ring buffer drain — safe to call alongside JS requests.
  * Handles slot-level params (slot:volume, etc.) and plugin params (synth:cutoff). */
