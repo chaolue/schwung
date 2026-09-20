@@ -6747,6 +6747,8 @@ function clearModuleParamShims() {
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_exit_module;
     delete globalThis.host_suspend_overtake;
+    delete globalThis.host_jump_to_slot;
+    delete globalThis.host_jump_to_master_fx;
     delete globalThis.shadow_component_trailing_menus;
     delete globalThis.shadow_component_run_action;
     delete globalThis.host_swap_module;
@@ -8860,6 +8862,8 @@ function exitToolOvertake() {
     delete globalThis.host_module_get_param;
     delete globalThis.host_exit_module;
     delete globalThis.host_suspend_overtake;
+    delete globalThis.host_jump_to_slot;
+    delete globalThis.host_jump_to_master_fx;
     delete globalThis.host_hide_module;
 
     /* Write exiting module ID so shim runs the correct per-module hook */
@@ -9129,6 +9133,31 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
             debugLog("host_suspend_overtake called by overtake module");
             suspendOvertakeMode();
         };
+        /* Suspend this overtake module (the full suspendOvertakeMode()
+         * sequence -- LED snapshot, parking in suspendedOvertakes, etc., NOT
+         * just the raw shim suspend_overtake flag) and hand the screen
+         * straight to Schwung's own chain editor for the given slot. Composed
+         * from the same primitives the JUMP_TO_SLOT/JUMP_TO_OVERTAKE shim
+         * flags already use (enterChainEdit / suspendOvertakeMode), but
+         * called directly and synchronously -- no ui_flags round trip, no
+         * risk of enterChainEdit running before the module's JS state is
+         * actually parked. */
+        globalThis.host_jump_to_slot = function(slot) {
+            debugLog("host_jump_to_slot called by overtake module: " + slot);
+            if (typeof slot !== "number" || slot < 0 || slot >= SHADOW_UI_SLOTS) return;
+            suspendOvertakeMode();
+            selectedSlot = slot;
+            enterChainEdit(slot);
+        };
+        /* Same, but for the Master FX chain (enterFxBus(0) — see its own
+         * comment: Send A/B are the first two boxes of that row, Master FX
+         * the rest, which is what "the master bus" the gesture landing here
+         * has always meant). */
+        globalThis.host_jump_to_master_fx = function() {
+            debugLog("host_jump_to_master_fx called by overtake module");
+            suspendOvertakeMode();
+            enterFxBus(0);
+        };
         globalThis.host_hide_module = function() {
             debugLog("host_hide_module called by overtake module");
             if (toolOvertakeActive) {
@@ -9284,6 +9313,8 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         delete globalThis.host_module_get_param;
         delete globalThis.host_exit_module;
         delete globalThis.host_suspend_overtake;
+        delete globalThis.host_jump_to_slot;
+        delete globalThis.host_jump_to_master_fx;
         if (typeof shadow_set_overtake_mode === "function") {
             shadow_set_overtake_mode(0);
         }
@@ -11879,6 +11910,18 @@ function startInteractiveTool(toolModule, filePath) {
             globalThis.host_suspend_overtake = function() {
                 debugLog("host_suspend_overtake called by overtake module (reconnect)");
                 suspendOvertakeMode();
+            };
+            globalThis.host_jump_to_slot = function(slot) {
+                debugLog("host_jump_to_slot called by overtake module (reconnect): " + slot);
+                if (typeof slot !== "number" || slot < 0 || slot >= SHADOW_UI_SLOTS) return;
+                suspendOvertakeMode();
+                selectedSlot = slot;
+                enterChainEdit(slot);
+            };
+            globalThis.host_jump_to_master_fx = function() {
+                debugLog("host_jump_to_master_fx called by overtake module (reconnect)");
+                suspendOvertakeMode();
+                enterFxBus(0);
             };
             globalThis.host_hide_module = function() {
                 debugLog("host_hide_module called by overtake module (reconnect)");
