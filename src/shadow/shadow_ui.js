@@ -8615,8 +8615,15 @@ function exitOvertakeMode() {
     needsRedraw = true;
 }
 
-/* Suspend overtake mode — leave background processes running */
-function suspendOvertakeMode() {
+/* Suspend overtake mode — leave background processes running.
+ *
+ * afterSuspend (optional): for a suspend_keeps_js module, called instead of
+ * the default "dismiss shadow UI, return to Move" once the module is fully
+ * parked -- e.g. to land on the chain editor or Master FX instead. Ignored
+ * by the non-suspend_keeps_js branch below, which tears the module down a
+ * different way (DSP stays alive via JACK, JS does not) and has nowhere
+ * equivalent to land. */
+function suspendOvertakeMode(afterSuspend) {
     corunTeardown();
     /* Capabilities of the module being parked, for the LED-handoff decision. */
     const parkedCaps = (overtakeModuleCallbacks && overtakeModuleCaps) ? overtakeModuleCaps : null;
@@ -8704,10 +8711,22 @@ function suspendOvertakeMode() {
             shadow_set_overtake_suppress_sysex(0);
         }
 
-        /* Dismiss shadow UI entirely so Move's native UI returns. */
-        setView(VIEWS.SLOTS);
-        if (typeof shadow_request_exit === "function") {
-            shadow_request_exit();
+        if (typeof afterSuspend === "function") {
+            /* Caller wants to land somewhere OTHER than Move's native UI --
+             * e.g. host_jump_to_slot/host_jump_to_master_fx landing on the
+             * chain editor / Master FX instead. The module is already fully
+             * parked above (suspendedOvertakes, overtake_mode cleared), so
+             * this only needs to pick the next view -- shadow_request_exit()
+             * must NOT run, since that is what tears the whole shadow UI down
+             * and hands the screen back to Move, which is the "just acts like
+             * a plain suspend" bug this parameter exists to avoid. */
+            afterSuspend();
+        } else {
+            /* Dismiss shadow UI entirely so Move's native UI returns. */
+            setView(VIEWS.SLOTS);
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
+            }
         }
         needsRedraw = true;
         return;
@@ -9136,18 +9155,21 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
         /* Suspend this overtake module (the full suspendOvertakeMode()
          * sequence -- LED snapshot, parking in suspendedOvertakes, etc., NOT
          * just the raw shim suspend_overtake flag) and hand the screen
-         * straight to Schwung's own chain editor for the given slot. Composed
-         * from the same primitives the JUMP_TO_SLOT/JUMP_TO_OVERTAKE shim
-         * flags already use (enterChainEdit / suspendOvertakeMode), but
-         * called directly and synchronously -- no ui_flags round trip, no
-         * risk of enterChainEdit running before the module's JS state is
-         * actually parked. */
+         * straight to Schwung's own chain editor for the given slot.
+         * enterChainEdit runs as suspendOvertakeMode's afterSuspend callback,
+         * not after it returns -- calling them as two separate statements
+         * left the module suspended but the screen still snapping back to
+         * Move, because suspendOvertakeMode's own default tail
+         * (setView(SLOTS) + shadow_request_exit()) always ran first and there
+         * was nothing here overriding it. See suspendOvertakeMode's own
+         * afterSuspend doc comment. */
         globalThis.host_jump_to_slot = function(slot) {
             debugLog("host_jump_to_slot called by overtake module: " + slot);
             if (typeof slot !== "number" || slot < 0 || slot >= SHADOW_UI_SLOTS) return;
-            suspendOvertakeMode();
-            selectedSlot = slot;
-            enterChainEdit(slot);
+            suspendOvertakeMode(function() {
+                selectedSlot = slot;
+                enterChainEdit(slot);
+            });
         };
         /* Same, but for the Master FX chain (enterFxBus(0) — see its own
          * comment: Send A/B are the first two boxes of that row, Master FX
@@ -9155,8 +9177,9 @@ function loadOvertakeModule(moduleInfo, skipOvertake) {
          * has always meant). */
         globalThis.host_jump_to_master_fx = function() {
             debugLog("host_jump_to_master_fx called by overtake module");
-            suspendOvertakeMode();
-            enterFxBus(0);
+            suspendOvertakeMode(function() {
+                enterFxBus(0);
+            });
         };
         globalThis.host_hide_module = function() {
             debugLog("host_hide_module called by overtake module");
@@ -11914,14 +11937,16 @@ function startInteractiveTool(toolModule, filePath) {
             globalThis.host_jump_to_slot = function(slot) {
                 debugLog("host_jump_to_slot called by overtake module (reconnect): " + slot);
                 if (typeof slot !== "number" || slot < 0 || slot >= SHADOW_UI_SLOTS) return;
-                suspendOvertakeMode();
-                selectedSlot = slot;
-                enterChainEdit(slot);
+                suspendOvertakeMode(function() {
+                    selectedSlot = slot;
+                    enterChainEdit(slot);
+                });
             };
             globalThis.host_jump_to_master_fx = function() {
                 debugLog("host_jump_to_master_fx called by overtake module (reconnect)");
-                suspendOvertakeMode();
-                enterFxBus(0);
+                suspendOvertakeMode(function() {
+                    enterFxBus(0);
+                });
             };
             globalThis.host_hide_module = function() {
                 debugLog("host_hide_module called by overtake module (reconnect)");
