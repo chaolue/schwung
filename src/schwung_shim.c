@@ -7773,6 +7773,45 @@ static inline int claim_cc_set(uint8_t cc) {
     return shadow_control && ((shadow_control->claim_cc_bits[cc >> 3] >> (cc & 7)) & 1);
 }
 
+/* ============================================================================
+ * Overtake-DSP-initiated "jump to chain slot" (dlsym'd export)
+ * ============================================================================
+ *
+ * Recombines two gestures that already ship separately — Shift+Vol+Track
+ * ("jump to that slot's chain editor": sets ui_slot + JUMP_TO_SLOT, launches
+ * the shadow UI if it isn't up) and Shift+Vol+Back ("suspend overtake, JACK
+ * keeps running": sets suspend_overtake) — into one atomic call an overtake
+ * DSP can make on its own behalf, without faking either keypress. Coming
+ * back to the overtake module afterward reuses the existing suspended-
+ * overtake resume path; nothing new is needed for that direction.
+ *
+ * A dlsym'd export, not a host_api_v1_t field — same reasoning as
+ * schwung_chain_slot_get_param/set_param in shadow_chain_mgmt.c: the struct's
+ * reserved tail must not be consumed by new fields (see the ABI-freeze
+ * comment in plugin_api_v1.h).
+ *
+ * slot is 0..SHADOW_CHAIN_INSTANCES-1. Returns 1 if the jump was armed, 0 if
+ * refused (bad slot, no overtake module actually active, or shadow UI
+ * disabled outright) — a refusal changes nothing, it never partially arms.
+ * Ordinary C call on the caller's own thread, exactly as real-time-safe as
+ * any other local call (no IPC, no wait) — safe from the SPI callback. */
+int schwung_overtake_jump_to_slot(int slot) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return 0;
+    if (!shadow_control || !shadow_ui_enabled) return 0;
+    if (shadow_control->overtake_mode < 2) return 0;
+
+    shadow_control->ui_slot = (uint8_t)slot;
+    shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
+    shadow_control->suspend_overtake = 1;
+    if (!shadow_display_mode) {
+        shadow_display_mode = 1;
+        shadow_control->display_mode = 1;
+        launch_shadow_ui_reset_backoff();
+        launch_shadow_ui();
+    }
+    return 1;
+}
+
 static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, int size)
 {
     (void)ctx;
