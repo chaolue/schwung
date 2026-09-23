@@ -59,6 +59,13 @@ done
 #    SLOT's, taken one pass later from audio the shim owns; both are dlsym'd by
 #    shadow_chain_mgmt.c. chain_synth_requires_continuous is the generator half
 #    of the silence-skip opt-out, dlsym'd the same way as the FX half.
+#    chain_set_clip_phase is the clip-phase seam for automation lanes: a dlsym'd entry point rather than a host_api_v1_t field,
+#    because the front of that struct's `reserved` tail is +120 -- the offset a
+#    shipped breakbeat build calls as get_project_bpm(). chain_set_clip_deleted
+#    is the other half of that seam: a clip's deletion is discovered on the
+#    worker thread, and a worker must not call a module entry point (which IS
+#    the SPI callback), so it publishes a mask + generation and the callback
+#    pushes it through here.
 so="build/modules/chain/dsp.so"
 if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
   got=$(nm -D --defined-only "$so" 2>/dev/null | awk '{print $NF}' | sort)
