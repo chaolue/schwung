@@ -101,7 +101,8 @@ func TestControlsChainLiveOrSaved(t *testing.T) {
 		"0|midi_fx_count":     "0",
 		"0|master_fx:modules": `[{"id":"cloudseed","path":"/x/cloudseed/cloudseed.so"},{"id":"","path":""}]`,
 	}
-	for _, s := range []string{"1", "2", "3"} {
+	// Every other slot, the aux slots included: a live answer is all of them.
+	for _, s := range []string{"1", "2", "3", "4", "5", "6", "7"} {
 		live[s+"|synth_module"] = ""
 		live[s+"|fx_count"] = "0"
 		live[s+"|midi_fx_count"] = ""
@@ -139,7 +140,8 @@ func TestControlsParamsKey(t *testing.T) {
 		{"slot=3&comp=midi_fx1", 3, "midi_fx1:chain_params", true},
 		{"fx=8", 0, "master_fx:fx8:chain_params", true},
 		{"fx=9", 0, "", false},
-		{"slot=4&comp=synth", 0, "", false},
+		{"slot=7&comp=synth", 7, "synth:chain_params", true}, // an aux slot
+		{"slot=8&comp=synth", 0, "", false},
 		{"slot=0&comp=synth:module", 0, "", false},
 		{"slot=0&comp=fx0", 0, "", false},
 		{"slot=0&comp=overtake_dsp", 0, "", false},

@@ -4272,14 +4272,22 @@ The `module` field must match the `id` in your module's `module.json`.
 
 ### Shadow Mode MIDI Routing
 
-Each shadow slot listens on a configurable MIDI channel (default 1-4):
+Each shadow slot listens on a configurable MIDI channel (default: its own
+number, 1-8):
 
-| Shadow Slot | Default Channel |
-|-------------|-----------------|
-| Slot A | Ch 1 |
-| Slot B | Ch 2 |
-| Slot C | Ch 3 |
-| Slot D | Ch 4 |
+| Shadow Slot | Default Channel | Behind it |
+|-------------|-----------------|-----------|
+| Slots 1-4 | Ch 1-4 | Move's tracks 1-4 |
+| Slots 5-8 | Ch 5-8 | nothing -- AUX slots |
+
+Slots 1-4 are Move's four tracks: they follow that track's mute / solo / volume,
+take its Link Audio under Move->Schwung, and carry its automation lanes and step
+chance. **Slots 5-8 are aux slots** with no Move track: they are played only by
+MIDI arriving on their receive channel (an external controller, an overtake
+sequencer, or a Move track whose MIDI out is set to that channel), and they
+have no lanes, p-locks or step chance. A module needs nothing to run in one --
+the chain contract is identical -- but it should not assume it will ever be
+told a clip phase there (`chain_set_clip_phase` passes track `-1`).
 
 **Forward Channel:** Some synths need MIDI on a specific channel regardless of slot. Configure via the slot's "Forward Ch" setting:
 - **Auto**: Pass MIDI through on the receive channel (default)

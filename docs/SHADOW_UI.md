@@ -228,6 +228,84 @@ segment an older shim left behind is SHORTER and reading past its end is SIGBUS,
 not a zero. `install.sh` REWRITES `features.json` from a fixed key list, so the key
 is carried over there too — one that is not listed resets on every deploy.
 
+### Eight slots: Move's four tracks, then four AUX slots
+
+`SHADOW_CHAIN_INSTANCES` is 8 and `SHADOW_MOVE_SLOTS` is 4. Slot s < 4 IS Move
+track s — fed its Link Audio under Move→Schwung, following its mute / solo /
+volume, selected by its Track button, with its lanes, p-locks and step chance
+keyed to its clips. Slots 4-7 are **aux slots**: Schwung-only instruments played
+from MIDI on their receive channel, which defaults to the slot's own number
+(5-8) — external USB MIDI, an overtake sequencer, or anything Move itself sends
+on that channel. They have everything a slot has that does not need a Move
+track: a chain, Slot Settings, volume / pan / mute / solo, sends and buses,
+LFOs, scenes, the snapshot, per-set persistence, stems, the Remote UI and the CC
+map. What they do not have is the list above.
+
+**The Link Audio read stops at four, and the slot count was what used to stop
+it.** `shim_move_channel_count()` counts the ACTIVE channels of the IN ring, and
+Main is one of them. The read loop was bounded by `SHADOW_CHAIN_INSTANCES &&
+la_channel_count`; at four slots the first bound did the work, at eight the
+second lets slot 4 read Main — Move's whole master mix summed into aux slot 5
+and doubled in the output. It is `SHADOW_MOVE_SLOTS` now, and
+`test_aux_slots.sh` fails on the old bound.
+
+**An aux slot is told it has no track.** `chain_set_clip_phase` gets `-1` for an
+aux slot, the lane code's own "no track": every write, clear, copy and adoption
+returns on `lane_track < 0`. The phase is unknown anyway —
+`shadow_slot_clip_phase` refuses past `MM_TRACKS` — and unknown is never phase 0.
+The Automation rows (Clear All / Clear Clip / Undo) are omitted from all three
+slot-settings surfaces and the component's Module page, rather than offered to
+find nothing.
+
+**Reaching one: tap the same Track button again.** The aux slots have no button,
+so they share Move's: from slot N's CHAIN EDITOR, a second Track N tap flips to
+slot N+4, and a Track tap from an aux slot goes to that Move slot
+(`trackTapTarget`, in the JUMP_TO_SLOT handler). Two cases are deliberately NOT
+flips. A first tap from a deeper page of slot N still returns to slot N's chain
+editor, as it always has. And the gesture that OPENS the UI from Move raises the
+screen and the jump in the same instant, so the flip requires the UI to have
+been on screen for `TRACK_TAP_ON_SCREEN_TICKS` before the jump — otherwise a
+long-press from Move onto a UI parked on slot N's editor would land on N+4. The
+chain editor's four left-margin marks show the BANK: Move's draws exactly as
+before (every pixel baseline is unchanged), the aux bank dots its unselected
+marks. The screen reader says "Slot 6, aux". The slot list (VIEWS.SLOTS) shows
+all eight.
+
+**`shadow_ui_state_t` was NOT resized, it was APPENDED.** Its per-slot arrays
+were sized `SHADOW_UI_SLOTS` when that was 4, and widening one moves every field
+behind it in a segment two separately deployed binaries share. They stay four
+wide; slots 4.. live in a v3 aux block at the end (offsets pinned by
+`_Static_assert`s), and `SHADOW_UI_BUFFER_SIZE` went 512 → 1024 because the
+struct grew past it. Reach any slot through the `shadow_ui_state_*()`
+accessors. `shadow_ui_state_slot_count()` trusts four slots from a v2 writer
+whatever `slot_count` says, and the UI pads every slot list to eight
+(`padSlotList`) — `slots[i].name = ""` over eight slots threw on the fifth
+whenever a list arrived four long.
+
+**A set saved before the aux slots RESETS them.** Both loaders — the shim's
+`shadow_load_config_from_dir` and the UI's `loadChainConfigFromDir` — read four
+entries from such a file, and stopping there left the aux slots carrying the
+PREVIOUS set's receive channel, level and solo: one soloed aux slot from set A
+silences every track of set B. An aux slot the file does not mention gets its
+defaults; Move's four are left as they always were for a short file. And Move's
+live model owns only Move's four mixes, so an aux slot's mute / solo always
+comes from the set file.
+
+**The shim's state file grew without breaking a downgrade.** `shadow_state.c`
+writes eight values per array in the `[a, b, c, d, ...]` shape a four-value
+`sscanf` parses, so an older build reads Move's four and ignores the rest; the
+new reader takes however many are there and applies none of a short (< 4)
+answer, as the old one did. Both config loaders' size caps went to 16 KB:
+eight patches beside a Master FX chain outgrew 4 KB, and an oversized file is
+ignored WHOLE.
+
+**CPU is the real limit, not memory.** Every slot renders serially on the SPI
+callback (core 3); the idle gate skips a silent slot, but eight playing heavy
+synths can outrun a frame. The CPU page reports all eight (`PERF_CHAIN_SLOTS`,
+`/schwung-perf` version 2). Not done: an aux slot does not publish a Link Audio
+`ME-N` channel, external control SURFACES (E16 / EC4 strips) stay Move's four,
+and Shift+knob on Move's own screen addresses Move's selected track.
+
 ### A timed-out read empties NOTHING, and latches nothing
 
 `loadChainConfigFromSlot`'s `readPosition` was `moduleId && moduleId !== ""`,
@@ -421,7 +499,7 @@ position no longer holds a module to show one for (Remove Module).
 
 ### Every component's knob grid ends with two pages it never declared
 
-Load a synth, audio FX or MIDI FX in one of the 4 slots and its knob-grid jog
+Load a synth, audio FX or MIDI FX in any chain slot and its knob-grid jog
 sequence ends with two pages neither the module nor its author put there:
 **My Presets** (row 1 a readout — `Preset` / `(none)` or `Name` / `* Name` —
 then `Load…`, `Save` and `Delete` only with a preset loaded, `Save As`
@@ -1130,7 +1208,7 @@ Skipback (Shift+Capture) and Song Mode's Record button all record through the
 same `shadow_sampler.c`, so a per-surface switch would be three places to keep
 in step. Song Mode needed no new recording code at all — it already called
 `host_sampler_start(path)`; it gained only a label, because pressing Record and
-getting seven files when you expected one is a surprise you can only discover
+getting a file per slot when you expected one is a surprise you can only discover
 after the take.
 
 **A stem is a SLOT, and the four slot stems ARE the four tracks.** Under
@@ -1173,11 +1251,27 @@ LSB on roughly half of all samples. It is emphatically **not** read from
 send return read from there would be silence in every file. An unloaded send
 writes silence and its file is deleted at finalize like any other.
 
-`SAMPLER_STEM_COUNT` is 7 and the send stems must stay **contiguous and last**:
-the tap indexes the table as `SAMPLER_STEM_SEND_A + sb`, and three
-`_Static_assert`s in `schwung_shim.c` fail the build on a send bus added without
-a stem, on a non-contiguous pair, and on the Move stem moving off the end of the
-four slots.
+`SAMPLER_STEM_COUNT` is 11 (it was 7 until the aux slots) and the send stems
+must stay **contiguous and last**: the tap indexes the table as
+`SAMPLER_STEM_SEND_A + sb`, and the `_Static_assert`s in `schwung_shim.c` fail
+the build on a send bus added without a stem, on a non-contiguous pair, on the
+Move stem moving off the end of the slot stems, and on the lazily allocated
+stems being anything but the aux slots.
+
+**The AUX SLOTS are stems 5-8 (`_Slot5`..`_Slot8`), and the slot stems come
+first because the shim indexes them by slot number.** An aux slot has no Move
+track, so under Move→Schwung its stem is its synth through its FX — and its tap
+had to come OUT of the Link Audio publisher guard it shared with the other four
+(`s < LINK_AUDIO_SHADOW_CHANNELS`), or it would have been in the master file and
+in no stem. Their **Skipback** rolling buffers are allocated LAZILY
+(`skipback_stems_want_aux`, from the shim worker at ~1 Hz): only once an aux
+slot holds a module, published with a release store the RT capture
+acquire-loads, so a device that never uses one spends exactly what it did
+before (~71 MB at the 60 s cap) and each aux slot in use adds ~10 MB. Zeros
+before the allocation are the truth — the slot was silent — and the shared
+write position keeps the new ring aligned from its first block. A buffer is
+freed only with the rest (stems off, or a length change); a save skips a stem
+with no buffer, which is the same outcome as a silent one.
 
 **Stems are pre-Master-FX and pre-master-volume.** MFX processes the mixed bus;
 there is no per-stem version of it to capture. With a Master FX chain loaded the
@@ -1663,7 +1757,7 @@ sub-plugin as a choice.
 
 ### Snapshot / recall: what it restores, and what it deliberately does not
 
-Shift+Copy snapshots all 4 slots plus all 8 Master FX positions; Shift+Delete
+Shift+Copy snapshots all 8 slots (the aux slots included) plus all 8 Master FX positions; Shift+Delete
 puts it back. One snapshot, overwritten each time.
 
 **A recall writes STATE, never SHAPE.** For each position it writes

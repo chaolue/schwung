@@ -23,7 +23,9 @@ cd "$(dirname "$0")/../.."
 fail() { echo "FAIL: $1" >&2; exit 1; }
 file="src/shadow/shadow_ui.js"
 
-command grep -q "let lastChainComponent = \[null, null, null, null\]" "$file" || \
+# One null per slot, sized by the slot count since the aux slots (it was the
+# literal [null, null, null, null] while there were four).
+command grep -q "let lastChainComponent = new Array(SHADOW_UI_SLOTS).fill(null);" "$file" || \
   fail "lastChainComponent is seeded with positions again -- index 0 is the MIDI FX +, so a fresh session opens there"
 
 sw=$(awk '/SET_CHANGED: " \+ oldDir/,/loadChainConfigFromDir\(newDir\)/' "$file")

@@ -82,20 +82,22 @@ async function save() {
 
 /* ---------------- the picker ---------------- */
 
+const CHAIN_SLOTS = 8;
 let pickerResolve = null;
 let pickerItems = [];
 
 function pickerWheres() {
     const out = [];
     const slots = (state.chain && state.chain.slots) || [];
-    for (let s = 0; s < 4; s++) {
+    // Every chain slot -- Move's four, then the aux slots (SHADOW_CHAIN_INSTANCES).
+    for (let s = 0; s < CHAIN_SLOTS; s++) {
         const comps = componentsOfSlot(slots[s]);
         if (comps.length) out.push({ value: "slot" + s, text: "Slot " + (s + 1), comps: comps.map((c) => Object.assign({ slot: s }, c)) });
     }
     const mfx = ((state.chain && state.chain.masterFx) || [])
         .map((m, i) => (m ? { fx: i + 1, module: m, title: "Master FX " + (i + 1) } : null)).filter(Boolean);
     if (mfx.length) out.push({ value: "mfx", text: "Master FX", comps: mfx });
-    out.push({ value: "mixer", text: "Mixer", comps: [0, 1, 2, 3].map((s) => ({ settings: s, title: "Slot " + (s + 1) }))
+    out.push({ value: "mixer", text: "Mixer", comps: Array.from({ length: CHAIN_SLOTS }, (_, s) => ({ settings: s, title: "Slot " + (s + 1) }))
         .concat([{ settings: null, title: "Master" }]) });
     return out;
 }

@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <pwd.h>
 #include "shadow_state.h"
+#include "shadow_constants.h"
 
 /* ============================================================================
  * Host callbacks (set by state_init)
@@ -20,6 +21,77 @@ static int *host_solo_count;
 static void chown_to_ableton(const char *path) {
     struct passwd *pw = getpwnam("ableton");
     if (pw) chown(path, pw->pw_uid, pw->pw_gid);
+}
+
+/* ============================================================================
+ * Per-slot arrays: one value per chain slot, Move's four first, then the aux
+ * slots. Written "[a, b, c, d, ...]" -- exactly the shape the four-value
+ * sscanf of builds before the aux slots parses, so a DOWNGRADE still reads
+ * the first four and ignores the rest. Read back as however many the file
+ * holds: a file from before the aux slots has four, and the aux slots keep
+ * their defaults.
+ * ============================================================================ */
+
+enum { SLOT_VOLUME, SLOT_CHANNEL, SLOT_FORWARD, SLOT_TRANSPOSE, SLOT_MUTED, SLOT_SOLOED };
+
+static int slot_int_field(int i, int field)
+{
+    switch (field) {
+    case SLOT_CHANNEL:   return host_chain_slots[i].channel;
+    case SLOT_FORWARD:   return host_chain_slots[i].forward_channel;
+    case SLOT_TRANSPOSE: return host_chain_slots[i].transpose;
+    case SLOT_MUTED:     return host_chain_slots[i].muted;
+    case SLOT_SOLOED:    return host_chain_slots[i].soloed;
+    default:             return 0;
+    }
+}
+
+static void write_slot_array(FILE *f, const char *key, int field, int last)
+{
+    fprintf(f, "  \"%s\": [", key);
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (i) fputs(", ", f);
+        if (field == SLOT_VOLUME) fprintf(f, "%.3f", host_chain_slots[i].volume);
+        else fprintf(f, "%d", slot_int_field(i, field));
+    }
+    fprintf(f, "]%s\n", last ? "" : ",");
+}
+
+/* Up to `max` numbers from the "[a, b, ...]" that follows `key`. Returns how
+ * many were read; fewer than SHADOW_MOVE_SLOTS is not a whole answer and the
+ * callers ignore it, as the four-value sscanf it replaces did. */
+static int parse_slot_array(const char *json, const char *key, double *out, int max)
+{
+    const char *p = strstr(json, key);
+    if (!p) return 0;
+    p = strchr(p, '[');
+    if (!p) return 0;
+    p++;
+    int n = 0;
+    while (n < max) {
+        while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+        char *end;
+        double v = strtod(p, &end);
+        if (end == p) break;
+        out[n++] = v;
+        p = end;
+        while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+        if (*p != ',') break;
+        p++;
+    }
+    return n;
+}
+
+static void slot_array_text(char *buf, size_t len, const double *v, int n, int is_float)
+{
+    size_t off = 0;
+    buf[0] = '\0';
+    for (int i = 0; i < n && off < len; i++) {
+        int w = is_float ? snprintf(buf + off, len - off, "%s%.2f", i ? ", " : "", v[i])
+                         : snprintf(buf + off, len - off, "%s%d", i ? ", " : "", (int)v[i]);
+        if (w < 0) break;
+        off += (size_t)w;
+    }
 }
 
 void state_init(const state_host_t *host)
@@ -204,52 +276,31 @@ void shadow_save_state(void)
         fprintf(f, "  \"link_audio_routing\": %s,\n", link_audio_routing_saved ? "true" : "false");
     }
     /* Volume is always the real user-set level; mute/solo are separate flags */
-    fprintf(f, "  \"slot_volumes\": [%.3f, %.3f, %.3f, %.3f],\n",
-            host_chain_slots[0].volume,
-            host_chain_slots[1].volume,
-            host_chain_slots[2].volume,
-            host_chain_slots[3].volume);
-    fprintf(f, "  \"slot_channels\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].channel,
-            host_chain_slots[1].channel,
-            host_chain_slots[2].channel,
-            host_chain_slots[3].channel);
-    fprintf(f, "  \"slot_forward_channels\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].forward_channel,
-            host_chain_slots[1].forward_channel,
-            host_chain_slots[2].forward_channel,
-            host_chain_slots[3].forward_channel);
-    fprintf(f, "  \"slot_transpose\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].transpose,
-            host_chain_slots[1].transpose,
-            host_chain_slots[2].transpose,
-            host_chain_slots[3].transpose);
-    fprintf(f, "  \"slot_muted\": [%d, %d, %d, %d],\n",
-            host_chain_slots[0].muted,
-            host_chain_slots[1].muted,
-            host_chain_slots[2].muted,
-            host_chain_slots[3].muted);
-    fprintf(f, "  \"slot_soloed\": [%d, %d, %d, %d]\n",
-            host_chain_slots[0].soloed,
-            host_chain_slots[1].soloed,
-            host_chain_slots[2].soloed,
-            host_chain_slots[3].soloed);
+    write_slot_array(f, "slot_volumes", SLOT_VOLUME, 0);
+    write_slot_array(f, "slot_channels", SLOT_CHANNEL, 0);
+    write_slot_array(f, "slot_forward_channels", SLOT_FORWARD, 0);
+    write_slot_array(f, "slot_transpose", SLOT_TRANSPOSE, 0);
+    write_slot_array(f, "slot_muted", SLOT_MUTED, 0);
+    write_slot_array(f, "slot_soloed", SLOT_SOLOED, 1);
     fprintf(f, "}\n");
     fclose(f);
     chown_to_ableton(SHADOW_CONFIG_PATH);
 
-    char msg[320];
-    snprintf(msg, sizeof(msg), "Saved slots: ch=[%d,%d,%d,%d] fwd=[%d,%d,%d,%d] vol=[%.2f,%.2f,%.2f,%.2f] muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d]",
-             host_chain_slots[0].channel, host_chain_slots[1].channel,
-             host_chain_slots[2].channel, host_chain_slots[3].channel,
-             host_chain_slots[0].forward_channel, host_chain_slots[1].forward_channel,
-             host_chain_slots[2].forward_channel, host_chain_slots[3].forward_channel,
-             host_chain_slots[0].volume, host_chain_slots[1].volume,
-             host_chain_slots[2].volume, host_chain_slots[3].volume,
-             host_chain_slots[0].muted, host_chain_slots[1].muted,
-             host_chain_slots[2].muted, host_chain_slots[3].muted,
-             host_chain_slots[0].soloed, host_chain_slots[1].soloed,
-             host_chain_slots[2].soloed, host_chain_slots[3].soloed);
+    char ch[64], fwd[64], vol[96], mu[40], so[40];
+    double v[SHADOW_CHAIN_INSTANCES];
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) v[i] = host_chain_slots[i].channel;
+    slot_array_text(ch, sizeof(ch), v, SHADOW_CHAIN_INSTANCES, 0);
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) v[i] = host_chain_slots[i].forward_channel;
+    slot_array_text(fwd, sizeof(fwd), v, SHADOW_CHAIN_INSTANCES, 0);
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) v[i] = host_chain_slots[i].volume;
+    slot_array_text(vol, sizeof(vol), v, SHADOW_CHAIN_INSTANCES, 1);
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) v[i] = host_chain_slots[i].muted;
+    slot_array_text(mu, sizeof(mu), v, SHADOW_CHAIN_INSTANCES, 0);
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) v[i] = host_chain_slots[i].soloed;
+    slot_array_text(so, sizeof(so), v, SHADOW_CHAIN_INSTANCES, 0);
+    char msg[400];
+    snprintf(msg, sizeof(msg), "Saved slots: ch=[%s] fwd=[%s] vol=[%s] muted=[%s] soloed=[%s]",
+             ch, fwd, vol, mu, so);
     if (host_log) host_log(msg);
 }
 
@@ -268,7 +319,10 @@ void shadow_load_state(void)
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 8192) {
+    /* 16 KB: eight slots' patches, six eight-wide arrays and a Master FX
+     * chain no longer fit comfortably in the 8 KB this was. A file over the
+     * cap is IGNORED whole, so the cap must sit well above any real one. */
+    if (size <= 0 || size > 16384) {
         fclose(f);
         return;
     }
@@ -283,140 +337,68 @@ void shadow_load_state(void)
     json[nread] = '\0';
     fclose(f);
 
-    /* Parse slot_volumes array */
-    const char *key = "\"slot_volumes\":";
-    char *pos = strstr(json, key);
-    if (pos) {
-        pos = strchr(pos, '[');
-        if (pos) {
-            float v0, v1, v2, v3;
-            if (sscanf(pos, "[%f, %f, %f, %f]", &v0, &v1, &v2, &v3) == 4) {
-                if (v0 < 0.0f) v0 = 0.0f; if (v0 > 4.0f) v0 = 4.0f;
-                if (v1 < 0.0f) v1 = 0.0f; if (v1 > 4.0f) v1 = 4.0f;
-                if (v2 < 0.0f) v2 = 0.0f; if (v2 > 4.0f) v2 = 4.0f;
-                if (v3 < 0.0f) v3 = 0.0f; if (v3 > 4.0f) v3 = 4.0f;
-                host_chain_slots[0].volume = v0;
-                host_chain_slots[1].volume = v1;
-                host_chain_slots[2].volume = v2;
-                host_chain_slots[3].volume = v3;
+    /* The per-slot arrays (see write_slot_array). Each is applied only when
+     * it is a whole answer for Move's four; an aux slot the file does not
+     * mention keeps its default. */
+    double v[SHADOW_CHAIN_INSTANCES];
+    char text[160], msg[200];
+    int n;
 
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot volumes: [%.2f, %.2f, %.2f, %.2f]",
-                         v0, v1, v2, v3);
-                if (host_log) host_log(msg);
-            }
+    if ((n = parse_slot_array(json, "\"slot_volumes\":", v, SHADOW_CHAIN_INSTANCES)) >= SHADOW_MOVE_SLOTS) {
+        for (int i = 0; i < n; i++) {
+            if (v[i] < 0.0) v[i] = 0.0;
+            if (v[i] > 4.0) v[i] = 4.0;
+            host_chain_slots[i].volume = (float)v[i];
         }
+        slot_array_text(text, sizeof(text), v, n, 1);
+        snprintf(msg, sizeof(msg), "Loaded slot volumes: [%s]", text);
+        if (host_log) host_log(msg);
     }
 
-    /* Parse slot_channels (receive channel) array */
-    const char *ch_key = "\"slot_channels\":";
-    char *ch_pos = strstr(json, ch_key);
-    if (ch_pos) {
-        ch_pos = strchr(ch_pos, '[');
-        if (ch_pos) {
-            int c0, c1, c2, c3;
-            if (sscanf(ch_pos, "[%d, %d, %d, %d]", &c0, &c1, &c2, &c3) == 4) {
-                host_chain_slots[0].channel = c0;
-                host_chain_slots[1].channel = c1;
-                host_chain_slots[2].channel = c2;
-                host_chain_slots[3].channel = c3;
-
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot channels: [%d, %d, %d, %d]",
-                         c0, c1, c2, c3);
-                if (host_log) host_log(msg);
-            }
-        }
+    /* Receive channel */
+    if ((n = parse_slot_array(json, "\"slot_channels\":", v, SHADOW_CHAIN_INSTANCES)) >= SHADOW_MOVE_SLOTS) {
+        for (int i = 0; i < n; i++) host_chain_slots[i].channel = (int)v[i];
+        slot_array_text(text, sizeof(text), v, n, 0);
+        snprintf(msg, sizeof(msg), "Loaded slot channels: [%s]", text);
+        if (host_log) host_log(msg);
     }
 
-    /* Parse slot_forward_channels array */
-    const char *fwd_key = "\"slot_forward_channels\":";
-    char *fwd_pos = strstr(json, fwd_key);
-    if (fwd_pos) {
-        fwd_pos = strchr(fwd_pos, '[');
-        if (fwd_pos) {
-            int f0, f1, f2, f3;
-            if (sscanf(fwd_pos, "[%d, %d, %d, %d]", &f0, &f1, &f2, &f3) == 4) {
-                host_chain_slots[0].forward_channel = f0;
-                host_chain_slots[1].forward_channel = f1;
-                host_chain_slots[2].forward_channel = f2;
-                host_chain_slots[3].forward_channel = f3;
-
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot fwd channels: [%d, %d, %d, %d]",
-                         f0, f1, f2, f3);
-                if (host_log) host_log(msg);
-            }
-        }
+    if ((n = parse_slot_array(json, "\"slot_forward_channels\":", v, SHADOW_CHAIN_INSTANCES)) >= SHADOW_MOVE_SLOTS) {
+        for (int i = 0; i < n; i++) host_chain_slots[i].forward_channel = (int)v[i];
+        slot_array_text(text, sizeof(text), v, n, 0);
+        snprintf(msg, sizeof(msg), "Loaded slot fwd channels: [%s]", text);
+        if (host_log) host_log(msg);
     }
 
-    /* Parse slot_transpose array */
-    const char *tr_key = "\"slot_transpose\":";
-    char *tr_pos = strstr(json, tr_key);
-    if (tr_pos) {
-        tr_pos = strchr(tr_pos, '[');
-        if (tr_pos) {
-            int t0, t1, t2, t3;
-            if (sscanf(tr_pos, "[%d, %d, %d, %d]", &t0, &t1, &t2, &t3) == 4) {
-                int *vals[4] = {&t0, &t1, &t2, &t3};
-                for (int i = 0; i < 4; i++) {
-                    if (*vals[i] < -12) *vals[i] = -12;
-                    if (*vals[i] > 12) *vals[i] = 12;
-                }
-                host_chain_slots[0].transpose = t0;
-                host_chain_slots[1].transpose = t1;
-                host_chain_slots[2].transpose = t2;
-                host_chain_slots[3].transpose = t3;
-
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot transpose: [%d, %d, %d, %d]",
-                         t0, t1, t2, t3);
-                if (host_log) host_log(msg);
-            }
+    if ((n = parse_slot_array(json, "\"slot_transpose\":", v, SHADOW_CHAIN_INSTANCES)) >= SHADOW_MOVE_SLOTS) {
+        for (int i = 0; i < n; i++) {
+            if (v[i] < -12) v[i] = -12;
+            if (v[i] > 12) v[i] = 12;
+            host_chain_slots[i].transpose = (int)v[i];
         }
+        slot_array_text(text, sizeof(text), v, n, 0);
+        snprintf(msg, sizeof(msg), "Loaded slot transpose: [%s]", text);
+        if (host_log) host_log(msg);
     }
 
-    /* Parse slot_muted array */
-    const char *muted_key = "\"slot_muted\":";
-    char *muted_pos = strstr(json, muted_key);
-    if (muted_pos) {
-        muted_pos = strchr(muted_pos, '[');
-        if (muted_pos) {
-            int m0, m1, m2, m3;
-            if (sscanf(muted_pos, "[%d, %d, %d, %d]", &m0, &m1, &m2, &m3) == 4) {
-                host_chain_slots[0].muted = m0;
-                host_chain_slots[1].muted = m1;
-                host_chain_slots[2].muted = m2;
-                host_chain_slots[3].muted = m3;
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot muted: [%d, %d, %d, %d]",
-                         m0, m1, m2, m3);
-                if (host_log) host_log(msg);
-            }
-        }
+    if ((n = parse_slot_array(json, "\"slot_muted\":", v, SHADOW_CHAIN_INSTANCES)) >= SHADOW_MOVE_SLOTS) {
+        for (int i = 0; i < n; i++) host_chain_slots[i].muted = (int)v[i];
+        slot_array_text(text, sizeof(text), v, n, 0);
+        snprintf(msg, sizeof(msg), "Loaded slot muted: [%s]", text);
+        if (host_log) host_log(msg);
     }
 
-    /* Parse slot_soloed array */
-    const char *soloed_key = "\"slot_soloed\":";
-    char *soloed_pos = strstr(json, soloed_key);
+    if ((n = parse_slot_array(json, "\"slot_soloed\":", v, SHADOW_CHAIN_INSTANCES)) >= SHADOW_MOVE_SLOTS) {
+        for (int i = 0; i < n; i++) host_chain_slots[i].soloed = (int)v[i];
+        slot_array_text(text, sizeof(text), v, n, 0);
+        snprintf(msg, sizeof(msg), "Loaded slot soloed: [%s]", text);
+        if (host_log) host_log(msg);
+    }
+    /* Counted over EVERY slot, whatever the file said: an aux slot soloed
+     * before this load is still soloed. */
     *host_solo_count = 0;
-    if (soloed_pos) {
-        soloed_pos = strchr(soloed_pos, '[');
-        if (soloed_pos) {
-            int s0, s1, s2, s3;
-            if (sscanf(soloed_pos, "[%d, %d, %d, %d]", &s0, &s1, &s2, &s3) == 4) {
-                int sol[4] = {s0, s1, s2, s3};
-                for (int i = 0; i < 4; i++) {
-                    host_chain_slots[i].soloed = sol[i];
-                    if (sol[i]) (*host_solo_count)++;
-                }
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Loaded slot soloed: [%d, %d, %d, %d]",
-                         s0, s1, s2, s3);
-                if (host_log) host_log(msg);
-            }
-        }
-    }
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        if (host_chain_slots[i].soloed) (*host_solo_count)++;
 
     free(json);
 
@@ -432,7 +414,7 @@ void shadow_load_state(void)
             "/data/UserData/schwung/mute_solo_reset_v1_done";
         if (access(reset_flag, F_OK) != 0) {
             int had_state = 0;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
                 if (host_chain_slots[i].muted || host_chain_slots[i].soloed)
                     had_state = 1;
                 host_chain_slots[i].muted = 0;

@@ -112,7 +112,11 @@
 /* `held_step` when no single step is held. Unsigned, so not -1. */
 #define SHADOW_HELD_STEP_NONE 0xFF
 #define CONTROL_BUFFER_SIZE 256
-#define SHADOW_UI_BUFFER_SIZE     512
+/* 1024 since the aux slots: shadow_ui_state_t grew from 288 to 568 bytes by
+ * APPENDING the v3 block, which no longer fit 512. Same resize procedure as
+ * the others above -- the shim creates and ftruncates, an attach refuses a
+ * short stale segment, and the two are deployed together. */
+#define SHADOW_UI_BUFFER_SIZE     1024
 /* The param segment: SHADOW_PARAM_VALUE_LEN plus shadow_param_t's header,
  * rounded up to a page with room to spare. A container with headroom, like
  * CONTROL_BUFFER_SIZE above -- the `<=` assert below means growing the struct
@@ -172,9 +176,31 @@
  * Slot Configuration
  * ============================================================================ */
 
-#define SHADOW_CHAIN_INSTANCES 4
-#define SHADOW_UI_SLOTS 4
+/*
+ * EIGHT CHAIN SLOTS, AND ONLY THE FIRST FOUR ARE MOVE'S TRACKS.
+ *
+ * Slot s < SHADOW_MOVE_SLOTS is paired with Move track s: it is fed that
+ * track's Link Audio under Move->Schwung, follows that track's mute / solo /
+ * volume, is selected by that Track button, and its automation lanes, p-locks
+ * and step chance are keyed to that track's clips. Slots 4-7 are AUX slots:
+ * Schwung-only instruments played from MIDI (external USB, or anything Move
+ * itself sends on their receive channel, 5-8 by default), with a mixer,
+ * persistence and stems of their own and none of the above. A Move track that
+ * does not exist simply never answers -- shadow_slot_clip_phase() refuses at
+ * MM_TRACKS, so a lane on an aux slot is "phase unknown", never phase 0.
+ *
+ * Every per-slot ARRAY is sized by SHADOW_CHAIN_INSTANCES; every path that
+ * reaches for a Move track tests shadow_slot_is_move_track(). Keep
+ * SHADOW_CHAIN_INSTANCES a bare literal: tests/host read it with a regex.
+ */
+#define SHADOW_CHAIN_INSTANCES 8
+#define SHADOW_MOVE_SLOTS 4
+#define SHADOW_UI_SLOTS SHADOW_CHAIN_INSTANCES
 #define SHADOW_UI_NAME_LEN 64
+
+static inline int shadow_slot_is_move_track(int slot) {
+    return slot >= 0 && slot < SHADOW_MOVE_SLOTS;
+}
 #define SHADOW_PARAM_KEY_LEN 64
 /* 128KB. A module's chain_params and ui_hierarchy each travel through one of
  * these, and the chain host REJECTS a module whose answer does not fit
@@ -1081,14 +1107,21 @@ static inline corun_owner_t corun_event_owner(const volatile shadow_control_t *c
  * UI state structure for slot information.
  * Must fit within SHADOW_UI_BUFFER_SIZE bytes.
  */
+/* The v1/v2 per-slot arrays are FOUR wide and stay four wide forever: they
+ * were sized by SHADOW_UI_SLOTS when that was 4, and resizing one moves every
+ * field behind it. Slots 4.. live in the v3 block appended at the end. Reach a
+ * slot through the shadow_ui_state_*() accessors below, never the arrays. */
+#define SHADOW_UI_STATE_BASE_SLOTS 4
+#define SHADOW_UI_STATE_AUX_SLOTS  (SHADOW_UI_SLOTS - SHADOW_UI_STATE_BASE_SLOTS)
+
 typedef struct shadow_ui_state_t {
     uint32_t version;
     uint8_t slot_count;
     uint8_t reserved[3];
-    uint8_t slot_channels[SHADOW_UI_SLOTS];      /* 0=all, 1-16=specific channel */
-    uint16_t slot_volumes[SHADOW_UI_SLOTS];      /* 0-400 percentage */
-    int8_t slot_forward_ch[SHADOW_UI_SLOTS];     /* -2=passthrough, -1=auto, 0-15=channel */
-    char slot_names[SHADOW_UI_SLOTS][SHADOW_UI_NAME_LEN];
+    uint8_t slot_channels[SHADOW_UI_STATE_BASE_SLOTS];      /* 0=all, 1-16=specific channel */
+    uint16_t slot_volumes[SHADOW_UI_STATE_BASE_SLOTS];      /* 0-400 percentage */
+    int8_t slot_forward_ch[SHADOW_UI_STATE_BASE_SLOTS];     /* -2=passthrough, -1=auto, 0-15=channel */
+    char slot_names[SHADOW_UI_STATE_BASE_SLOTS][SHADOW_UI_NAME_LEN];
     /* --- version 2 --- Appended, so every offset above is unchanged and a
      * mismatched pair reads zeros here rather than garbage. Consumers must
      * still gate on `version >= 2`: zero means "not muted", which is a
@@ -1102,14 +1135,47 @@ typedef struct shadow_ui_state_t {
      * whether to draw an "M" or an "S". Mirrored here they cost nothing.
      * Every mutation path already funnels through
      * shadow_ui_state_update_slot(), which publishes them. */
-    uint8_t slot_muted[SHADOW_UI_SLOTS];         /* 0/1 */
-    uint8_t slot_soloed[SHADOW_UI_SLOTS];        /* 0/1 */
+    uint8_t slot_muted[SHADOW_UI_STATE_BASE_SLOTS];         /* 0/1 */
+    uint8_t slot_soloed[SHADOW_UI_STATE_BASE_SLOTS];        /* 0/1 */
+    /* --- version 3 --- the AUX slots (SHADOW_UI_STATE_BASE_SLOTS..), one
+     * block of the same six facts. A v2 shim writes slot_count 4 and never
+     * touches these; a v2 shadow_ui clamps slot_count to its own 4 and never
+     * reads them. Either half can be ahead of the other across an upgrade. */
+    uint8_t aux_channels[SHADOW_UI_STATE_AUX_SLOTS];
+    uint16_t aux_volumes[SHADOW_UI_STATE_AUX_SLOTS];
+    int8_t aux_forward_ch[SHADOW_UI_STATE_AUX_SLOTS];
+    char aux_names[SHADOW_UI_STATE_AUX_SLOTS][SHADOW_UI_NAME_LEN];
+    uint8_t aux_muted[SHADOW_UI_STATE_AUX_SLOTS];
+    uint8_t aux_soloed[SHADOW_UI_STATE_AUX_SLOTS];
 } shadow_ui_state_t;
 
 /* Bump when a field is APPENDED to shadow_ui_state_t; consumers gate on it.
  * Never reorder or resize an existing field — the two processes are deployed
  * as separate files and can be out of step across an upgrade. */
-#define SHADOW_UI_STATE_VERSION 2
+#define SHADOW_UI_STATE_VERSION 3
+
+/* How many slots a reader may trust in this segment: what the writer says it
+ * published, but never more than its version can hold (a v2 writer has no aux
+ * block, whatever slot_count says) nor more than this build knows. */
+static inline int shadow_ui_state_slot_count(const shadow_ui_state_t *st) {
+    int count = st->slot_count;
+    int cap = (st->version >= 3) ? SHADOW_UI_SLOTS : SHADOW_UI_STATE_BASE_SLOTS;
+    if (count <= 0 || count > cap) count = cap;
+    return count;
+}
+
+/* Per-slot field accessors. `slot` must be in 0..SHADOW_UI_SLOTS-1. */
+#define SHADOW_UI_STATE_FIELD(st, slot, base, aux)                         \
+    ((slot) < SHADOW_UI_STATE_BASE_SLOTS ? &(st)->base[(slot)]             \
+                                         : &(st)->aux[(slot) - SHADOW_UI_STATE_BASE_SLOTS])
+#define shadow_ui_state_channel(st, slot)  SHADOW_UI_STATE_FIELD(st, slot, slot_channels, aux_channels)
+#define shadow_ui_state_volume(st, slot)   SHADOW_UI_STATE_FIELD(st, slot, slot_volumes, aux_volumes)
+#define shadow_ui_state_forward(st, slot)  SHADOW_UI_STATE_FIELD(st, slot, slot_forward_ch, aux_forward_ch)
+#define shadow_ui_state_muted(st, slot)    SHADOW_UI_STATE_FIELD(st, slot, slot_muted, aux_muted)
+#define shadow_ui_state_soloed(st, slot)   SHADOW_UI_STATE_FIELD(st, slot, slot_soloed, aux_soloed)
+#define shadow_ui_state_name(st, slot)                                       \
+    ((slot) < SHADOW_UI_STATE_BASE_SLOTS ? (st)->slot_names[(slot)]          \
+                                         : (st)->aux_names[(slot) - SHADOW_UI_STATE_BASE_SLOTS])
 
 /*
  * Parameter request structure for get/set operations.
@@ -1479,6 +1545,17 @@ typedef char test_stream_size_check[(sizeof(test_stream_shm_t) == 16 + TEST_STRE
 typedef char shadow_control_size_check[(sizeof(shadow_control_t) <= CONTROL_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_control_floor_check[(CONTROL_BUFFER_SIZE >= 256) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
+/* The v2 layout is a contract with every shadow_ui already deployed: these
+ * are its offsets as built with SHADOW_UI_SLOTS 4, and the aux block must
+ * start where v2 ended. Raising the slot count must never move one of them. */
+_Static_assert(__builtin_offsetof(shadow_ui_state_t, slot_channels) == 8, "v2 layout moved");
+_Static_assert(__builtin_offsetof(shadow_ui_state_t, slot_volumes) == 12, "v2 layout moved");
+_Static_assert(__builtin_offsetof(shadow_ui_state_t, slot_forward_ch) == 20, "v2 layout moved");
+_Static_assert(__builtin_offsetof(shadow_ui_state_t, slot_names) == 24, "v2 layout moved");
+_Static_assert(__builtin_offsetof(shadow_ui_state_t, slot_muted) == 280, "v2 layout moved");
+_Static_assert(__builtin_offsetof(shadow_ui_state_t, slot_soloed) == 284, "v2 layout moved");
+_Static_assert(__builtin_offsetof(shadow_ui_state_t, aux_channels) == 288,
+               "the v3 aux block must be APPENDED where v2 ended");
 typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SHADOW_SCREENREADER_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_overlay_size_check[(sizeof(shadow_overlay_state_t) <= SHADOW_OVERLAY_BUFFER_SIZE) ? 1 : -1];

@@ -133,10 +133,25 @@ typedef struct {
  * start at the first sound rather than at t=0, and the stems would no longer
  * line up with each other or with the master.
  */
-#define SAMPLER_STEM_COUNT 7
-#define SAMPLER_STEM_MOVE   4  /* index of the Move stem; 0-3 are the slots */
-#define SAMPLER_STEM_SEND_A 5  /* the two global send returns, in bus order */
-#define SAMPLER_STEM_SEND_B 6
+/* THE AUX SLOTS (4-7) ARE STEMS TOO, and in both modes: they have no Move
+ * track, so under Move->Schwung their stem is the synth through its FX, and
+ * outside it the same as any slot. Without them the "sums to the master"
+ * statement above would fail the moment an aux slot played. Slot stems are
+ * indexed by slot number, so they come first and the Move stem follows them.
+ *
+ * MEMORY: Skipback keeps one rolling buffer per stem while Save is Stems or
+ * Both, and the AUX stems' buffers are allocated LAZILY -- only once that aux
+ * slot holds a module (skipback_stems_want_aux). The seven stems every device
+ * has stay all-or-nothing at ~71 MB, exactly as before the aux slots; each aux
+ * slot in use adds ~10 MB, up to ~111 MB with all four. An aux buffer is
+ * freed only with the rest (stems off, or a length change). The Quantized
+ * Sampler's stem rings are small and allocated for all eleven up front. */
+#define SAMPLER_STEM_COUNT 11
+#define SAMPLER_STEM_AUX_FIRST 4  /* the aux slots' stems: lazily allocated */
+#define SAMPLER_STEM_AUX_COUNT 4
+#define SAMPLER_STEM_MOVE   8  /* index of the Move stem; 0-7 are the slots */
+#define SAMPLER_STEM_SEND_A 9  /* the two global send returns, in bus order */
+#define SAMPLER_STEM_SEND_B 10
 
 /* File-name suffixes, parallel to the stem indices. */
 extern const char *const sampler_stem_names[SAMPLER_STEM_COUNT];
@@ -326,8 +341,15 @@ int  sampler_get_stem_mode(void);
 void sampler_capture_stems(const int16_t *const *stems, int count);
 
 /* Same, for the skipback rolling buffers. No-op unless stems are enabled and
- * the stem buffers were successfully allocated. */
+ * the stem buffers were successfully allocated; an aux stem whose buffer has
+ * not been allocated is skipped. */
 void skipback_capture_stems(const int16_t *const *stems, int count);
+
+/* Worker only. Bit k = aux slot k (chain slot SAMPLER_STEM_AUX_FIRST + k)
+ * holds a module. Allocates the skipback stem buffer of each such slot that
+ * has none, if stems are on; never frees one. Cheap when nothing is missing,
+ * so it is called every worker pass. */
+void skipback_stems_want_aux(unsigned aux_mask);
 
 /* Seconds actually allocated for the skipback STEM buffers, which is capped
  * below the master's length (SKIPBACK_STEM_MAX_SECONDS) -- seven rolling

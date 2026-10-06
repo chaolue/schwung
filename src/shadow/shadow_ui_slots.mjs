@@ -76,7 +76,11 @@ export const SLOT_SETTINGS = [
  */
 export function slotSettingsItems(slot) {
     const splits = ctx.chainSynthSplits ? ctx.chainSynthSplits(slot) : false;
-    return SLOT_SETTINGS.filter((item) => item.key !== "buses" || splits);
+    /* An AUX slot has no Move track, so no clips and no automation. */
+    const aux = ctx.isAuxSlot ? ctx.isAuxSlot(slot) : false;
+    return SLOT_SETTINGS.filter((item) => (item.key !== "buses" || splits) &&
+        !(aux && (item.key === "clear_lanes" || item.key === "clear_clip_lanes" ||
+                  item.key === "undo_lane_edit")));
 }
 
 /* ---- Module-local state ------------------------------------------------- */

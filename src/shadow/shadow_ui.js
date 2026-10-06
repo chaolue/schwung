@@ -378,7 +378,14 @@ import {
 /* Track buttons - derive from imported constants */
 const TRACK_CC_START = MoveRow4;  // CC 40
 const TRACK_CC_END = MoveRow1;    // CC 43
-const SHADOW_UI_SLOTS = 4;
+/* EIGHT chain slots: Move's four tracks, then four AUX slots (shadow_constants.h,
+ * "EIGHT CHAIN SLOTS"). An aux slot has no Move track behind it -- no Track
+ * button, no Link Audio, no mute/solo/volume follow, no automation lanes or
+ * step chance -- and is played from MIDI on its receive channel (5-8 by
+ * default). Must equal SHADOW_CHAIN_INSTANCES; tests/host/test_aux_slots.sh. */
+const SHADOW_UI_SLOTS = 8;
+const SHADOW_MOVE_SLOTS = 4;
+function isAuxSlot(slot) { return slot >= SHADOW_MOVE_SLOTS && slot < SHADOW_UI_SLOTS; }
 
 /* UI flags from shim (must match SHADOW_UI_FLAG_* in shim) */
 const SHADOW_UI_FLAG_JUMP_TO_SLOT = 0x01;
@@ -496,12 +503,10 @@ const PATCH_DIR = "/data/UserData/schwung/patches";
 const SLOT_STATE_DIR_DEFAULT = "/data/UserData/schwung/slot_state";
 let activeSlotStateDir = SLOT_STATE_DIR_DEFAULT;
 const AUTOSAVE_INTERVAL = 300;  /* ~10 seconds at 30fps */
-const DEFAULT_SLOTS = [
-    { channel: 1, name: "" },
-    { channel: 2, name: "" },
-    { channel: 3, name: "" },
-    { channel: 4, name: "" }
-];
+/* One per slot, receiving on its own number: Move's tracks on 1-4, the aux
+ * slots on 5-8. */
+const DEFAULT_SLOTS = Array.from({ length: SHADOW_UI_SLOTS },
+                                 (_, i) => ({ channel: i + 1, name: "" }));
 
 /* View constants */
 const VIEWS = {
@@ -876,29 +881,29 @@ let autosaveJob = null;
  * file said Mini-JV, and the next autosave made that permanent. Cleared when
  * the slot matches its file (a late load landed), when it holds anything else
  * (the user changed it), and on the next set change. */
-let slotRestorePending = [null, null, null, null];
+let slotRestorePending = new Array(SHADOW_UI_SLOTS).fill(null);
 /* Exact bytes last written to each slot_N.json, so an unchanged slot skips the
  * eMMC write entirely (measured ~120ms per write — the single most expensive
  * thing the UI thread did). Cleared whenever the file set changes underneath
  * us, so the next pass rewrites unconditionally. */
-let lastWrittenSlotJson = [null, null, null, null];
+let lastWrittenSlotJson = new Array(SHADOW_UI_SLOTS).fill(null);
 /* Has this slot's lane document been RESTORED (or confirmed absent) since the
  * set was loaded? Until it has, the slot serving "" says nothing about what
  * the user owns, so the autosave may not clear the file. See
  * restoreSlotLanes, and persistSlotLanes for the one branch that consults it. */
-let laneRestoreConfirmed = [false, false, false, false];
+let laneRestoreConfirmed = new Array(SHADOW_UI_SLOTS).fill(false);
 
 /* Same skip-if-unchanged, for lanes_N.json. A lane document only changes when
  * something records into it, so on an ordinary set this makes the extra write
  * free -- without it the autosave pass gained a second eMMC write every five
  * seconds forever, which is the defect the slot cache above was added for. */
-let lastWrittenLaneJson = [null, null, null, null];
+let lastWrittenLaneJson = new Array(SHADOW_UI_SLOTS).fill(null);
 /* The chain's `lanes:rev` (a hash of the store's content) at the moment
  * lastWrittenLaneJson was last VERIFIED against the slot. While the two agree
  * the autosave skips `lanes:state` entirely -- serialising a full store is
  * milliseconds on the SPI callback, every slot, every pass. Only
  * persistSlotLanes sets it; every other path that touches the cache nulls it. */
-let lastWrittenLaneRev = [null, null, null, null];
+let lastWrittenLaneRev = new Array(SHADOW_UI_SLOTS).fill(null);
 
 /* Have we already said that this slot is holding a take it cannot save?
  *
@@ -906,40 +911,40 @@ let lastWrittenLaneRev = [null, null, null, null];
  * the CONDITION would repeat until the user cleared it. This latches on the
  * transition into the state and resets when it leaves, so the sentence is
  * said when it becomes true and a second episode is still heard. */
-let laneStallAnnounced = [false, false, false, false];
+let laneStallAnnounced = new Array(SHADOW_UI_SLOTS).fill(false);
 /* Step chance (chance_<i>.txt): the same write cache, rev skip and restore
  * confirmation as the lanes above, for the same reasons -- see
  * persistSlotChance. */
-let lastWrittenChanceDoc = [null, null, null, null];
-let lastWrittenChanceRev = [null, null, null, null];
-let chanceRestoreConfirmed = [false, false, false, false];
+let lastWrittenChanceDoc = new Array(SHADOW_UI_SLOTS).fill(null);
+let lastWrittenChanceRev = new Array(SHADOW_UI_SLOTS).fill(null);
+let chanceRestoreConfirmed = new Array(SHADOW_UI_SLOTS).fill(false);
 function invalidateAutosaveWriteCache() {
-    lastWrittenChanceDoc = [null, null, null, null];
-    lastWrittenChanceRev = [null, null, null, null];
-    lastWrittenSlotJson = [null, null, null, null];
-    lastWrittenLaneJson = [null, null, null, null];
-    lastWrittenLaneRev = [null, null, null, null];
+    lastWrittenChanceDoc = new Array(SHADOW_UI_SLOTS).fill(null);
+    lastWrittenChanceRev = new Array(SHADOW_UI_SLOTS).fill(null);
+    lastWrittenSlotJson = new Array(SHADOW_UI_SLOTS).fill(null);
+    lastWrittenLaneJson = new Array(SHADOW_UI_SLOTS).fill(null);
+    lastWrittenLaneRev = new Array(SHADOW_UI_SLOTS).fill(null);
     /* A stall belongs to the set that was loaded. Carrying the latch across a
      * set change would swallow the announcement for the incoming set's first
      * stuck take, which is the one worth hearing. */
-    laneStallAnnounced = [false, false, false, false];
+    laneStallAnnounced = new Array(SHADOW_UI_SLOTS).fill(false);
 }
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 /* move_doc_gen while the active set was an unsaved "__pending-*" one: its
  * state migrates to the real UUID only if the document is still the same. */
 let pendingSetDocGen = -1;
-let slotDirtyCache = [false, false, false, false];
+let slotDirtyCache = new Array(SHADOW_UI_SLOTS).fill(false);
 /* Module signature ("synth|midi_fx1|fx1|fx2", one field per chain position, in
  * signal order — see getSlotModuleSignature) from the last successful autosave.
  * Used to relax the "empty state → bail" guard when the user swaps to a module
  * that lacks state get/set — a module change makes the prior file stale anyway. */
-let lastSavedSlotSignature = ["", "", "", ""];
+let lastSavedSlotSignature = new Array(SHADOW_UI_SLOTS).fill("");
 /* Set when the user explicitly empties every component in a slot via the
  * picker. Lets autosave bypass the "shim reports empty but slot has a
  * preset name" guard (which protects against transient boot-load failures)
  * for genuine user removals. Reset when the user picks any module, when a
  * set is loaded, or after the empty marker has been written. */
-let slotUserCleared = [false, false, false, false];
+let slotUserCleared = new Array(SHADOW_UI_SLOTS).fill(false);
 /*
  * Which USER PRESET each component is on — {name, hash} per slot+prefix.
  *
@@ -2669,7 +2674,7 @@ function moduleListsCountFor(moduleId) {
  * two rows under it are the destructive ones, and reading before swapping or
  * removing is the order the page is for.
  */
-function moduleMenuEntries(moduleId, clipLabel) {
+function moduleMenuEntries(moduleId, clipLabel, noLanes) {
     const entries = [];
     if (getModuleHelpChildren(moduleId)) {
         entries.push({ label: "Module Help", action: "module_help" });
@@ -2694,8 +2699,10 @@ function moduleMenuEntries(moduleId, clipLabel) {
      * The clip is named in the value for the same reason it is on the slot
      * row: without it the row is a promise about a clip the page cannot
      * show. */
-    entries.push({ label: "Clear Automation", value: clipLabel || "",
-                   action: "clear_component_lanes" });
+    if (!noLanes) {
+        entries.push({ label: "Clear Automation", value: clipLabel || "",
+                       action: "clear_component_lanes" });
+    }
     entries.push({ label: "Swap Module", action: "swap_module" });
     entries.push({ label: "Remove Module", action: "remove_module" });
     return entries;
@@ -2759,8 +2766,10 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
          * already plan a page called that, so claimName would dedupe this to
          * "Presets - 2". "My Presets" (46px) collides with nothing. */
         { name: "My Presets", entries: presetEntries },
+        /* An aux slot has no clips, so no automation to clear. */
         { name: "Module", entries: moduleMenuEntries(loaded.module,
-                                                      slotClipLabel(slotIndex)) },
+                                                      slotClipLabel(slotIndex),
+                                                      isAuxSlot(slotIndex)) },
     ];
 }
 
@@ -5731,7 +5740,7 @@ let selectedChainComponent = 0;
  * null makes "no memory" unrepresentable as a position, which is what lets the
  * default apply.
  */
-let lastChainComponent = [null, null, null, null];
+let lastChainComponent = new Array(SHADOW_UI_SLOTS).fill(null);
 let selectingModule = false;   // True when in module selection for a component
 let availableModules = [];     // Modules available for selected component type
 let selectedModuleIndex = 0;   // Index in availableModules
@@ -9826,7 +9835,17 @@ function loadSlotsFromConfig() {
             name: (typeof entry.name === "string") ? entry.name : (DEFAULT_SLOTS[idx]?.name ?? "Unknown")
         };
     });
-    return slotsFromConfig;
+    return padSlotList(slotsFromConfig);
+}
+
+/* Every slot list is SHADOW_UI_SLOTS long. A config saved before the aux
+ * slots carries four entries, and a shim one version behind publishes four;
+ * the loops that walk SHADOW_UI_SLOTS and index slots[i] would throw on the
+ * fifth. The missing tail is the defaults -- what a fresh aux slot is. */
+function padSlotList(list) {
+    const out = Array.isArray(list) ? list.slice(0, SHADOW_UI_SLOTS) : [];
+    for (let i = out.length; i < SHADOW_UI_SLOTS; i++) out.push({ ...DEFAULT_SLOTS[i] });
+    return out;
 }
 
 function loadMasterFxFromConfig() {
@@ -10136,8 +10155,15 @@ function loadChainConfigFromDir(dir) {
         const data = JSON.parse(raw);
         if (!data || !Array.isArray(data.slots)) return;
         const ownsMix = moveModelOwnsMix();
-        for (let i = 0; i < SHADOW_UI_SLOTS && i < data.slots.length; i++) {
-            const s = data.slots[i];
+        for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+            /* An AUX slot a set saved before the aux slots existed does not
+             * mention gets the defaults, not whatever the previous set left
+             * on it -- a soloed aux slot carried over would silence every
+             * track of this one. Move's four are skipped when absent, as
+             * before (the C loader reads the same file at boot). */
+            if (i >= data.slots.length && !isAuxSlot(i)) continue;
+            const s = (i < data.slots.length && data.slots[i]) ? data.slots[i]
+                : { volume: 1.0, pan: 0, channel: i + 1, forward_channel: -1, muted: 0, soloed: 0 };
             if (typeof s.volume === "number") setSlotParamWithTimeout(i, "slot:volume", String(s.volume), 500);
             /* Absent (a set saved before pan existed) means centre. */
             setSlotParamWithTimeout(i, "slot:pan", String(typeof s.pan === "number" ? s.pan : 0), 500);
@@ -10151,8 +10177,11 @@ function loadChainConfigFromDir(dir) {
             const recvCh = (typeof s.channel === "number") ? s.channel : (i + 1);
             setSlotParamWithTimeout(i, "slot:receive_channel", String(recvCh), 500);
             if (typeof s.forward_channel === "number") setSlotParamWithTimeout(i, "slot:forward_channel", String(s.forward_channel), 500);
-            if (!ownsMix && typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
-            if (!ownsMix && typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
+            /* Move's model owns its four tracks' mute/solo; an aux slot has
+             * no track, so its own saved state is the only answer. */
+            const takeMix = !ownsMix || isAuxSlot(i);
+            if (takeMix && typeof s.muted === "number") setSlotParamWithTimeout(i, "slot:muted", String(s.muted), 500);
+            if (takeMix && typeof s.soloed === "number") setSlotParamWithTimeout(i, "slot:soloed", String(s.soloed), 500);
         }
         debugLog("SET_CHANGED: loaded chain config from " + path);
     } catch (e) {
@@ -10181,6 +10210,7 @@ function refreshSlots() {
     } else {
         newSlots = configSlots;
     }
+    newSlots = padSlotList(newSlots);
     /* Only redraw if slot data actually changed */
     let changed = (newSlots.length !== slots.length);
     if (!changed) {
@@ -10237,6 +10267,10 @@ function getChainSettingsItems(slotIndex) {
         if (item.key === "buses") return splits;
         if (item.key === "sends") return grid;
         if (item.key === "buses:main_send1" || item.key === "buses:main_send2") return !grid;
+        /* An aux slot has no Move track, so no clips and no automation. The
+         * same three rows slotSettingsItems drops. */
+        if (item.key === "clear_lanes" || item.key === "clear_clip_lanes" ||
+            item.key === "undo_lane_edit") return !isAuxSlot(slotIndex);
         return true;
     });
 }
@@ -15814,6 +15848,23 @@ function loadMasterFxChainFromConfigOnMaster() {
 }
 
 /* Enter chain editing view for a slot */
+/* THE AUX SLOTS HAVE NO TRACK BUTTON, so they share Move's: a SECOND tap of
+ * Track N on slot N's chain editor flips to its aux partner, slot N+4, and a
+ * Track tap from an aux slot goes back to that Move slot. Everything else is
+ * unchanged -- a first tap from a deeper page still returns to slot N's chain
+ * editor, and the flip needs the UI to have been on screen already, so the
+ * gesture that OPENS the UI from Move (which raises the screen and the jump
+ * together) lands on slot N exactly as it did. `onScreenTicks` is how long
+ * the UI was up before this jump arrived. */
+const TRACK_TAP_ON_SCREEN_TICKS = 3;
+let slotJumpOnScreenTicks = 0;
+function trackTapTarget(slot, onScreenTicks) {
+    if (slot < 0 || slot >= SHADOW_MOVE_SLOTS) return slot;
+    if (onScreenTicks < TRACK_TAP_ON_SCREEN_TICKS) return slot;
+    if (view === VIEWS.CHAIN_EDIT && selectedSlot === slot) return slot + SHADOW_MOVE_SLOTS;
+    return slot;
+}
+
 function enterChainEdit(slotIndex) {
     selectedSlot = slotIndex;
     updateFocusedSlot(slotIndex);
@@ -15827,7 +15878,7 @@ function enterChainEdit(slotIndex) {
      * reading `.key` off it threw. */
     const comp = slotChainComponents(selectedSlot)[selectedChainComponent];
     if (!comp) {
-        announce(`Slot ${slotIndex + 1}, Patch Selection`);
+        announce(`${slotSpokenName(slotIndex)}, Patch Selection`);
         return;
     }
     const moduleData = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
@@ -15839,7 +15890,13 @@ function enterChainEdit(slotIndex) {
         info = displayName;
     }
 
-    announce(`Slot ${slotIndex + 1}, ${comp.label} ${info}`);
+    announce(`${slotSpokenName(slotIndex)}, ${comp.label} ${info}`);
+}
+
+/* "Slot 5, aux" -- the screen reader says which kind of slot it landed on,
+ * since the flip between a track's slot and its aux partner is one tap. */
+function slotSpokenName(slotIndex) {
+    return `Slot ${slotIndex + 1}` + (isAuxSlot(slotIndex) ? ", aux" : "");
 }
 
 /* Scan modules directory for modules of a specific component type */
@@ -16734,6 +16791,7 @@ function slotGridIoFor(slotIndex) {
         hasSplitVoices: () => chainSynthSplits(slotIndex),
         /* Names the clip on the `Clear Clip Lanes` row -- see slotClipLabel. */
         clipLabel: () => slotClipLabel(slotIndex),
+        isAuxSlot: () => isAuxSlot(slotIndex),
         /* An LFO's target reads as a name, not as "fx1" — see
          * shared/lfo_target_label.mjs. Resolved through the same ctx the LFO
          * editor uses, so the grid and the list can never describe the same
@@ -17372,7 +17430,7 @@ function isSlotMpeMode(slot) {
 }
 
 /* State to restore when MPE mode is turned off */
-const chainMpePreState = [null, null, null, null];
+const chainMpePreState = new Array(SHADOW_UI_SLOTS).fill(null);
 
 function getChainSettingValue(slot, setting) {
     if (setting.key === "mpe_mode") {
@@ -25903,19 +25961,33 @@ function drawChainEdit() {
 
     const BOX_Y = DIAGRAM_Y;
 
-    /* Draw slot indicators - 4 marks in left margin, spanning from below header to footer */
+    /* Draw slot indicators - 4 marks in left margin, spanning from below header
+     * to footer. Four is a BANK: Move's four tracks, or the four aux slots,
+     * whichever holds the selected slot. Move's bank draws exactly as it
+     * always has; the aux bank draws its unselected marks DOTTED -- the same
+     * place on the same screen, but not the slots the Track buttons reach. */
     const INDICATOR_X = 0;
     const INDICATOR_W = 4;
     const INDICATOR_GAP = 1;
+    const INDICATOR_MARKS = 4;
     const INDICATOR_START_Y = BOX_Y;  // same margin below title rule as boxes
     const INDICATOR_END_Y = MOVY_RULE_Y;   // same margin above the footer rule
     const INDICATOR_H = Math.floor((INDICATOR_END_Y - INDICATOR_START_Y - 3 * INDICATOR_GAP) / 4);
-    for (let s = 0; s < 4; s++) {
-        const iy = INDICATOR_START_Y + s * (INDICATOR_H + INDICATOR_GAP);
+    const indicatorBank = selectedSlot - (selectedSlot % INDICATOR_MARKS);
+    for (let k = 0; k < INDICATOR_MARKS; k++) {
+        const s = indicatorBank + k;
+        const iy = INDICATOR_START_Y + k * (INDICATOR_H + INDICATOR_GAP);
         if (s === selectedSlot) {
             fill_rect(INDICATOR_X, iy, INDICATOR_W, INDICATOR_H, 1);
-        } else {
+        } else if (indicatorBank === 0) {
             draw_rect(INDICATOR_X, iy, INDICATOR_W, INDICATOR_H, 1);
+        } else {
+            for (let x = 0; x < INDICATOR_W; x++) {
+                for (let y = 0; y < INDICATOR_H; y++) {
+                    const edge = x === 0 || y === 0 || x === INDICATOR_W - 1 || y === INDICATOR_H - 1;
+                    if (edge && ((x + y) % 2 === 0)) set_pixel(INDICATOR_X + x, iy + y, 1);
+                }
+            }
         }
     }
 
@@ -26443,6 +26515,7 @@ function drawHelpDetail() {
     /* Constants */
     _ctx.VIEWS = VIEWS;
     _ctx.DEFAULT_SLOTS = DEFAULT_SLOTS;
+    _ctx.isAuxSlot = isAuxSlot;
     _ctx.KNOB_BASE_STEP_FLOAT = KNOB_BASE_STEP_FLOAT;
 
     /* Master FX state (read/write) */
@@ -28292,7 +28365,7 @@ globalThis.init = function() {
              * slot instance isn't fully initialized yet — reject anything
              * that doesn't look like a module id). */
             const MODULE_ID_RE = /^[a-z][a-z0-9_-]*$/;
-            for (let i = 0; i < 4; i++) {
+            for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 const synthModule = getSlotParam(i, "synth_module");
                 if (synthModule && MODULE_ID_RE.test(synthModule)) {
                     host_track_event('module_loaded', '"module_id":"' + synthModule + '","source":"startup","slot":' + i);
@@ -28747,6 +28820,14 @@ globalThis.tick = function() {
         return;
     }
 
+    /* How long the UI has been ON SCREEN, measured BEFORE this tick's flags are
+     * read: a Track tap made inside the UI finds it already up, while the
+     * gesture that opens the UI from Move raises the screen and the jump in the
+     * same instant. trackTapTarget needs to tell the two apart. */
+    const onScreenNow = typeof shadow_get_display_mode !== "function" || shadow_get_display_mode() === 1;
+    const onScreenBefore = slotJumpOnScreenTicks;
+    slotJumpOnScreenTicks = onScreenNow ? slotJumpOnScreenTicks + 1 : 0;
+
     /* Check for jump-to-slot flag on EVERY tick (flag can be set while UI is running) */
     if (typeof shadow_get_ui_flags === "function") {
         const flags = shadow_get_ui_flags();
@@ -28822,8 +28903,9 @@ globalThis.tick = function() {
                 if (typeof shadow_get_ui_slot === "function") {
                     const jumpSlot = shadow_get_ui_slot();
                     if (jumpSlot >= 0 && jumpSlot < SHADOW_UI_SLOTS) {
-                        selectedSlot = jumpSlot;
-                        enterChainEdit(jumpSlot);
+                        const target = trackTapTarget(jumpSlot, onScreenBefore);
+                        selectedSlot = target;
+                        enterChainEdit(target);
                     }
                 }
                 /* Clear the flag */

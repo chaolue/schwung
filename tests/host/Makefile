@@ -98,6 +98,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_sampler_stem_path \
 	$(BUILD_DIR)/test_sampler_wav_trim \
 	$(BUILD_DIR)/test_perf_snapshot_size \
+	$(BUILD_DIR)/test_aux_slots \
 	$(BUILD_DIR)/test_relative_cc \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
 	$(BUILD_DIR)/test_link_audio_conceal \
@@ -136,6 +137,12 @@ endif
 PERF_MFX_SLOTS := $(shell awk '/^\#define PERF_MASTER_FX_SLOTS /{print $$3}' ../../src/host/perf_snapshot.h)
 ifneq ($(strip $(PERF_MFX_SLOTS)),$(strip $(MASTER_FX_SLOTS)))
 $(error PERF_MASTER_FX_SLOTS ($(PERF_MFX_SLOTS)) != MASTER_FX_SLOTS ($(MASTER_FX_SLOTS)) - update src/host/perf_snapshot.h)
+endif
+# And the chain slots: the CPU page would silently drop the aux slots' load.
+CHAIN_SLOTS := $(shell awk '/^\#define SHADOW_CHAIN_INSTANCES /{print $$3}' ../../src/host/shadow_constants.h)
+PERF_CHAIN_SLOTS := $(shell awk '/^\#define PERF_CHAIN_SLOTS /{print $$3}' ../../src/host/perf_snapshot.h)
+ifneq ($(strip $(PERF_CHAIN_SLOTS)),$(strip $(CHAIN_SLOTS)))
+$(error PERF_CHAIN_SLOTS ($(PERF_CHAIN_SLOTS)) != SHADOW_CHAIN_INSTANCES ($(CHAIN_SLOTS)) - update src/host/perf_snapshot.h)
 endif
 
 # The send caps, same reasoning again — but these are DEFINED FROM other names
@@ -372,6 +379,11 @@ $(BUILD_DIR)/test_edit_follow: test_edit_follow.c ../../src/host/edit_follow.c .
 # lane_trace.c is LINKED, not stubbed: it owns the ring
 # shadow_lanes_publish_driving pushes into, and a stub would put the ring back
 # to one copy per translation unit. Disarmed it does nothing.
+# shadow_state.c is #included by the test (so its config path can be pointed
+# at a temp file); shadow_set_pages.c is linked as is.
+$(BUILD_DIR)/test_aux_slots: test_aux_slots.c ../../src/host/shadow_state.c ../../src/host/shadow_set_pages.c | $(BUILD_DIR)
+	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function $(DEPFLAGS) $(INCLUDES) -o $@ test_aux_slots.c ../../src/host/shadow_set_pages.c
+
 $(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c | $(BUILD_DIR)
 	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c -lm
 

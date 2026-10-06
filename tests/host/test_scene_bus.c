@@ -210,7 +210,9 @@ int main(void) {
     /* ---- THE HOST SCOPE: an override beside the user's value, never a write to it. */
     shadow_scene_host_bind(&host_io);
     CHECK(shadow_scene_bus_scope("host", 4) == SCENE_HOST_SCOPE, "\"host\" names the host scope");
-    CHECK(scene_host_meta("slot4", "pan", NULL) && !scene_host_meta("slot5", "pan", NULL) &&
+    /* slot1..slot8: Move's four and the four aux slots, and nothing past. */
+    CHECK(scene_host_meta("slot4", "pan", NULL) && scene_host_meta("slot8", "pan", NULL) &&
+          !scene_host_meta("slot9", "pan", NULL) && !scene_host_meta("slot0", "pan", NULL) &&
           scene_host_meta("send1", "to_send2", NULL) && !scene_host_meta("send2", "to_send2", NULL) &&
           scene_host_meta("mfx_lfo2", "depth", NULL) && !scene_host_meta("mfx_lfo1", "target", NULL),
           "the host table knows exactly its settings");
