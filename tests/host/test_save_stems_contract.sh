@@ -281,13 +281,42 @@ for (const [name, want] of [["SAVE_STEMS_MASTER", 0], ["SAVE_STEMS_STEMS", 1], [
         const stemSec = parseInt(stemM[1], 10);
         check(stemSec <= parseInt(maxM[1], 10),
             "SKIPBACK_STEM_MAX_SECONDS (" + stemSec + ") exceeds SKIPBACK_MAX_SECONDS");
-        const bytes = stemSec * 44100 * 2 * 2 * count;
+        /* The AUX slots stems are allocated LAZILY -- only for an aux slot
+         * that holds a module (skipback_stems_want_aux) -- so the up-front
+         * cost every device pays is the other stems, and the 80 MB budget is
+         * about those, unchanged. Each aux slot in use adds one more buffer on
+         * top, which is the second, separate ceiling below. */
+        const auxFirstM = src.SMPH.match(/^#define SAMPLER_STEM_AUX_FIRST\s+(\d+)/m);
+        const auxCountM = src.SMPH.match(/^#define SAMPLER_STEM_AUX_COUNT\s+(\d+)/m);
+        check(!!auxFirstM && !!auxCountM, "the SAMPLER_STEM_AUX_* constants are gone from " + SMPH);
+        const lazy = auxCountM ? parseInt(auxCountM[1], 10) : 0;
+        const perStem = stemSec * 44100 * 2 * 2;
+        const bytes = perStem * (count - lazy);
         const BUDGET = 80 * 1024 * 1024;
         check(bytes <= BUDGET,
             "the skipback stem buffers would take " + (bytes / 1048576).toFixed(1) +
-            " MB (" + count + " x " + stemSec + "s) — over the " +
+            " MB (" + (count - lazy) + " x " + stemSec + "s) — over the " +
             (BUDGET / 1048576) + " MB this device can spend on a feature that is " +
             "off by default");
+        /* With every aux slot in use and stems on. Chosen, not derived: the
+         * user opts into each 10 MB by putting a module in an aux slot. */
+        const AUX_CEILING = 120 * 1024 * 1024;
+        check(perStem * count <= AUX_CEILING,
+            "with all " + lazy + " aux slots in use the skipback stems would take " +
+            (perStem * count / 1048576).toFixed(1) + " MB — over the " +
+            (AUX_CEILING / 1048576) + " MB ceiling");
+        /* And lazy means lazy: reconcile must skip them, and the one place
+         * that allocates them must be the aux path. */
+        check(/if \(skipback_stem_is_lazy\(i\)\) continue;/.test(src.SMPC),
+            "skipback_stems_reconcile allocates the aux stems up front again -- every " +
+            "device would pay for slots it never uses");
+        check(/void skipback_stems_want_aux\(unsigned aux_mask\)/.test(src.SMPC),
+            "skipback_stems_want_aux is gone -- nothing would ever allocate an aux stem");
+        if (auxFirstM) {
+            const auxFirst = parseInt(auxFirstM[1], 10);
+            check(auxFirst + lazy === moveIdx,
+                "the lazily allocated stems must be exactly the aux slots, ending at the Move stem");
+        }
         /* And it must cover the DEFAULT length, or the common case is already
          * truncated and the cap is doing harm rather than bounding it. */
         const defM = src.SMPH.match(/^#define SKIPBACK_DEFAULT_SECONDS\s+(\d+)/m);

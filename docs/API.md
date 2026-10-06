@@ -252,6 +252,8 @@ host_set_analytics_enabled(v) // 0/1
 host_track_event(name, props) // Send analytics event (if enabled)
 
 // Shadow control / state queries (shadow_ui only)
+// `slot` is a chain slot 0-7: 0-3 are Move's tracks, 4-7 the aux slots (no
+// Move track). shadow_get_selected_slot() is Move's selected TRACK, so 0-3.
 shadow_get_param(slot, key) / shadow_set_param(slot, key, val)
 shadow_set_param_timeout(ms)
 shadow_get_slots() / shadow_set_focused_slot(slot)

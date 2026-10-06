@@ -63,7 +63,7 @@ var perfShmPath = "/dev/shm/schwung-perf"
 const (
 	// SCHWUNG_PERF_MAGIC / _VERSION / _SHM_SIZE from perf_snapshot.h.
 	perfMagic   = 0x50455246 // "PERF"
-	perfVersion = 1
+	perfVersion = 2
 	perfShmSize = 4096
 
 	// Seqlock read attempts before giving up and reporting the read as failed.
@@ -73,7 +73,7 @@ const (
 	perfReadAttempts = 3
 
 	// PERF_CHAIN_SLOTS / PERF_MASTER_FX_SLOTS from perf_snapshot.h.
-	perfChainSlots    = 4
+	perfChainSlots    = 8
 	perfMasterFXSlots = 8
 
 	// One (avg, max) uint64 pair.

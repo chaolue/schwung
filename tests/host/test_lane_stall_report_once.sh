@@ -28,8 +28,10 @@ let code = src
 
 function fail(msg) { console.log('FAIL: ' + msg); process.exit(1); }
 
-if (!/let\s+laneStallAnnounced\s*=\s*\[\s*false\s*,\s*false\s*,\s*false\s*,\s*false\s*\]/.test(code))
-  fail('laneStallAnnounced is not declared per slot -- a latch shared across slots reports the first stuck take and silences the other three');
+// One latch per slot, sized by the slot count since the aux slots (it was the
+// literal [false, false, false, false] while there were four).
+if (!/let\s+laneStallAnnounced\s*=\s*new Array\(SHADOW_UI_SLOTS\)\.fill\(false\)/.test(code))
+  fail('laneStallAnnounced is not declared per slot -- a latch shared across slots reports the first stuck take and silences the others');
 
 // The announcement must be guarded by the latch, not by the condition alone.
 const guard = /if\s*\(\s*stalledLanes\s*>\s*0\s*&&\s*!\s*laneStallAnnounced\s*\[\s*i\s*\]\s*\)/;
@@ -43,7 +45,7 @@ if (!/laneStallAnnounced\s*\[\s*i\s*\]\s*=\s*false/.test(code))
 // A set change must reset it, or the incoming set's first stuck take is eaten.
 const inval = code.slice(code.indexOf('function invalidateAutosaveWriteCache'));
 const body = inval.slice(0, inval.indexOf('}') + 1);
-if (!/laneStallAnnounced\s*=\s*\[/.test(body))
+if (!/laneStallAnnounced\s*=\s*(\[|new Array\()/.test(body))
   fail('invalidateAutosaveWriteCache does not reset laneStallAnnounced -- the latch survives a set change and swallows the new set\'s first stuck take');
 
 // And the report has to come from the branch that DROPS the take: the empty

@@ -180,12 +180,13 @@ static JSValue js_shadow_get_slots(JSContext *ctx, JSValueConst this_val, int ar
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_ui_state) return JS_NULL;
     JSValue arr = JS_NewArray(ctx);
-    int count = shadow_ui_state->slot_count;
-    if (count <= 0 || count > SHADOW_UI_SLOTS) count = SHADOW_UI_SLOTS;
+    /* Slots 4.. (the aux slots) come from the v3 block, and only from a shim
+     * that published one -- a v2 shim's segment answers four. */
+    int count = shadow_ui_state_slot_count(shadow_ui_state);
     for (int i = 0; i < count; i++) {
         JSValue obj = JS_NewObject(ctx);
-        JS_SetPropertyStr(ctx, obj, "channel", JS_NewInt32(ctx, shadow_ui_state->slot_channels[i]));
-        JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, shadow_ui_state->slot_names[i]));
+        JS_SetPropertyStr(ctx, obj, "channel", JS_NewInt32(ctx, *shadow_ui_state_channel(shadow_ui_state, i)));
+        JS_SetPropertyStr(ctx, obj, "name", JS_NewString(ctx, shadow_ui_state_name(shadow_ui_state, i)));
         JS_SetPropertyUint32(ctx, arr, i, obj);
     }
     return arr;
@@ -210,12 +211,11 @@ static JSValue js_shadow_get_slot_flags(JSContext *ctx, JSValueConst this_val, i
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_ui_state) return JS_NULL;
     if (shadow_ui_state->version < 2) return JS_NULL;
-    int count = shadow_ui_state->slot_count;
-    if (count <= 0 || count > SHADOW_UI_SLOTS) count = SHADOW_UI_SLOTS;
+    int count = shadow_ui_state_slot_count(shadow_ui_state);
     JSValue arr = JS_NewArray(ctx);
     for (int i = 0; i < count; i++) {
-        int flags = (shadow_ui_state->slot_muted[i] ? 1 : 0)
-                  | (shadow_ui_state->slot_soloed[i] ? 2 : 0);
+        int flags = (*shadow_ui_state_muted(shadow_ui_state, i) ? 1 : 0)
+                  | (*shadow_ui_state_soloed(shadow_ui_state, i) ? 2 : 0);
         JS_SetPropertyUint32(ctx, arr, i, JS_NewInt32(ctx, flags));
     }
     return arr;

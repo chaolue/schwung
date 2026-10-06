@@ -24,7 +24,10 @@
 
 #define SHM_SCHWUNG_PERF      "/schwung-perf"
 #define SCHWUNG_PERF_MAGIC    0x50455246u   /* "PERF" */
-#define SCHWUNG_PERF_VERSION  1u
+/* 2: PERF_CHAIN_SLOTS 4 -> 8 (the aux slots) moved every field behind the
+ * per-slot arrays. A reader of the other version reports the read as failed
+ * rather than mislabelling numbers -- schwung-manager checks this field. */
+#define SCHWUNG_PERF_VERSION  2u
 
 /* A whole page, deliberately. /dev/shm is tmpfs and allocates by page: measured
  * on the device, an 84-byte segment occupied 4096 — the same 8 blocks as a
@@ -36,7 +39,7 @@
 /* Chain slots and Master FX slots. Restated rather than included because this
  * header is read by tests/host/ on the dev machine, which does not build the
  * chain manager. The tests/host/Makefile pins them against the real headers. */
-#define PERF_CHAIN_SLOTS    4
+#define PERF_CHAIN_SLOTS    8
 #define PERF_MASTER_FX_SLOTS 8
 
 typedef struct {

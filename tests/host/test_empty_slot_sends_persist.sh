@@ -38,7 +38,10 @@ const fs = require("fs");
 const src = fs.readFileSync(process.argv[2], "utf8");
 const grab = (re) => { const m = src.match(re); if (!m) throw new Error("not found: " + re); return m[0]; };
 const code = [
-  grab(/const savedEmptySends = \[[^\]]*\];/),
+  grab(/const savedEmptySends = [^;]*;/),
+  /* The aux slots: the loader asks which slots are Move's (SHADOW_MOVE_SLOTS). */
+  grab(/const SHADOW_MOVE_SLOTS = [^;]*;/),
+  grab(/function isAuxSlot\(slot\) \{.*\}/),
   grab(/function applySavedEmptySends\(i\) \{[\s\S]*?\n\}/),
   grab(/function loadChainConfigFromDir\(dir\) \{[\s\S]*?\n\}/),
 ].join("\n");
