@@ -31025,17 +31025,22 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
 
-        /* Handle track button CCs (40-43) for slot selection
-         * Track 1 (top) = CC 43 → slot 0, Track 4 (bottom) = CC 40 → slot 3 */
-        if (d1 >= TRACK_CC_START && d1 <= TRACK_CC_END && d2 > 0) {
-            const slotIndex = TRACK_CC_END - d1;
-            if (slotIndex >= 0 && slotIndex < SHADOW_UI_SLOTS) {
-                selectedSlot = slotIndex;
-                updateFocusedSlot(slotIndex);
-                const slotName = slots[slotIndex]?.name || `Slot ${slotIndex + 1}`;
-                announce(`Track ${slotIndex + 1}, ${slotName}`);
-                needsRedraw = true;
-            }
+        /* Track button CCs (40-43): CONSUMED, and nothing else. The shim owns
+         * a Track tap while the UI is up -- it raises JUMP_TO_SLOT (Keep
+         * Schwung, Shift+Vol+Track) or dismisses the UI -- and the jump
+         * handler picks the slot, flipping to the aux partner on a second tap
+         * (trackTapTarget).
+         *
+         * This used to set selectedSlot here as well, without changing the
+         * view. That raced the jump: whenever this message was handled
+         * first, trackTapTarget found the chain editor "on slot N" (it was
+         * still drawing the old slot under the new number) and flipped. From
+         * an aux slot a Track tap then stayed on the aux slot instead of
+         * returning, and a tap from another aux slot landed on N+4 -- the
+         * device log shows "Track 1, ..." spoken here and "Slot 5, aux" from
+         * the jump 20 ms later. Intermittent, because the order of the two
+         * depends on where the press lands in the UI's tick. */
+        if (d1 >= TRACK_CC_START && d1 <= TRACK_CC_END) {
             return;
         }
     }

@@ -265,7 +265,14 @@ flips. A first tap from a deeper page of slot N still returns to slot N's chain
 editor, as it always has. And the gesture that OPENS the UI from Move raises the
 screen and the jump in the same instant, so the flip requires the UI to have
 been on screen for `TRACK_TAP_ON_SCREEN_TICKS` before the jump — otherwise a
-long-press from Move onto a UI parked on slot N's editor would land on N+4. The
+long-press from Move onto a UI parked on slot N's editor would land on N+4.
+**The jump is the ONLY writer of the slot on a Track tap.** The UI's own MIDI
+handler also used to set `selectedSlot` on every Track press without changing
+the view, and whenever it ran before the jump, `trackTapTarget` read "slot N's
+editor" while the old slot was still open — a tap from aux slot 5 stayed on 5,
+and Track 1 from aux slot 8 landed on 5. Intermittent, by where the press fell
+in the UI tick; the device log showed "Track 1, …" then "Slot 5, aux" 20 ms
+apart. That branch now only consumes the press. The
 chain editor's four left-margin marks show the BANK: Move's draws exactly as
 before (every pixel baseline is unchanged), the aux bank dots its unselected
 marks. The screen reader says "Slot 6, aux". The slot list (VIEWS.SLOTS) shows

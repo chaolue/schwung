@@ -147,6 +147,21 @@ const constLine = (name) => (UIJS.match(new RegExp("^const " + name + " = [^;]+;
     check(tap(5, 50, VIEWS.CHAIN_EDIT, 5) === 5, "an aux slot jump is taken as it is");
 }
 
+/* ...and nothing else may move selectedSlot on the same tap. The UI's own
+ * MIDI handler set it on every Track press without changing the view, so
+ * when it ran before the jump, trackTapTarget saw "slot N's editor" while the
+ * old slot was still open: a tap from aux slot 5 stayed on 5, and from aux
+ * slot 8 Track 1 landed on 5. Intermittent on hardware (the device log has
+ * "Track 1, ..." then "Slot 5, aux" 20 ms apart). */
+{
+    const at = UIJS.indexOf("if (d1 >= TRACK_CC_START && d1 <= TRACK_CC_END");
+    const body = at < 0 ? "" : UIJS.slice(at, UIJS.indexOf("\n        }\n", at));
+    check(at > 0, "could not find the UI's Track CC branch in shadow_ui.js");
+    check(!/selectedSlot\s*=|enterChainEdit|updateFocusedSlot/.test(body),
+          "the UI's Track CC handler must not select a slot: the shim's JUMP_TO_SLOT owns " +
+          "the tap, and a second writer races trackTapTarget");
+}
+
 /* Slot lists are always full length. */
 {
     const pad = new Function([
