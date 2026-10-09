@@ -248,7 +248,8 @@ int shadow_load_config_from_dir(const char *dir) {
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    if (size <= 0 || size > 4096) { fclose(f); return 0; }
+    /* 16 KB: see shadow_chain_load_config -- eight slots outgrew 4. */
+    if (size <= 0 || size > 16384) { fclose(f); return 0; }
 
     char *json = malloc(size + 1);
     if (!json) { fclose(f); return 0; }
@@ -259,9 +260,11 @@ int shadow_load_config_from_dir(const char *dir) {
     /* Parse slots - same logic as shadow_chain_load_config */
     char *cursor = json;
     *host.solo_count = 0;
+    int parsed = 0;
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
         char *name_pos = strstr(cursor, "\"name\"");
         if (!name_pos) break;
+        parsed = i + 1;
         char *colon = strchr(name_pos, ':');
         if (colon) {
             char *q1 = strchr(colon, '"');
@@ -324,6 +327,20 @@ int shadow_load_config_from_dir(const char *dir) {
         }
     }
     free(json);
+    /* An AUX slot this set's file does not mention -- every set saved before
+     * the aux slots existed -- goes back to its defaults. Leaving it would
+     * carry the previous set's receive channel, level and SOLO into this one:
+     * a soloed aux slot from set A silencing every track of set B. Move's
+     * four are left as they were for a short file, as they always have been. */
+    for (int i = parsed; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (shadow_slot_is_move_track(i)) continue;
+        host.chain_slots[i].patch_name[0] = '\0';
+        host.chain_slots[i].channel = host.chain_parse_channel(i + 1);
+        host.chain_slots[i].volume = 1.0f;
+        host.chain_slots[i].forward_channel = -1;
+        host.chain_slots[i].muted = 0;
+        host.chain_slots[i].soloed = 0;
+    }
     host.ui_state_refresh();
     return 1;
 }

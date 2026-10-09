@@ -44,7 +44,7 @@ int main(void)
     /* Pin the slot counts against the real headers. If MASTER_FX_SLOTS is
      * raised and this header is not, the page silently reports half the
      * chain — the same failure test_master_fx_slot_routing guards. */
-    CHECK(PERF_CHAIN_SLOTS == 4,
+    CHECK(PERF_CHAIN_SLOTS == 8,
           "PERF_CHAIN_SLOTS must match SHADOW_CHAIN_INSTANCES");
     CHECK(PERF_MASTER_FX_SLOTS == 8,
           "PERF_MASTER_FX_SLOTS must match MASTER_FX_SLOTS in "

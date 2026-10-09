@@ -26,7 +26,10 @@ export const KIND_PARAM = "param";
 export const KIND_MASTER = "master";
 export const KIND_SETTING = "setting";
 
-export const SLOTS = 4;
+/* Every chain slot, aux included: a control learned on an aux slot's knob
+ * addresses that slot. (surface_core.mjs keeps its own four -- a surface
+ * strip is a Move TRACK.) Must equal SHADOW_CHAIN_INSTANCES. */
+export const SLOTS = 8;
 export const MASTER_FX_POSITIONS = 8;
 
 const COMPONENT_RE = /^(synth|fx\d+|midi_fx\d+)$/;

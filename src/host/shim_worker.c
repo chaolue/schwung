@@ -28,7 +28,9 @@
 #include "ui_midi_out_carry.h" /* UI_MIDI_CARRY_PACKETS */
 #include "perf_snapshot.h"
 #include "shadow_shm_util.h"
+#include "shadow_constants.h"   /* SHADOW_CHAIN_INSTANCES */
 #include "shadow_chain_mgmt.h"  /* shadow_fx_load_worker_tick */
+#include "shadow_sampler.h"    /* skipback_stems_want_aux */
 
 volatile uint32_t shim_debug_flags = 0;
 
@@ -662,7 +664,7 @@ static void align_capture_tick(void) {
     }
     unlink(ALIGN_CAPTURE_TRIGGER_PATH);
     if (seconds <= 0) seconds = ALIGN_CAPTURE_DEFAULT_SECONDS;
-    if (slot < 0 || slot >= 4) slot = 0;   /* SHADOW_CHAIN_INSTANCES */
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) slot = 0;
 
     /* Six streams: the chosen slot's two summands and its post-FX output,
      * the finished mailbox, and Send A's input and output. Inputs alone
@@ -818,6 +820,19 @@ static void drain_events(void) {
 }
 
 /* ---- thread ------------------------------------------------------------ */
+
+/* The aux slots' skipback stem buffers are allocated on first use, not with
+ * the rest (shadow_sampler.h, "MEMORY"): tell the sampler which aux slots hold
+ * a module. A racy read of the slot table, as the other worker-side readers
+ * make -- the worst case is one pass late. */
+static void aux_stems_tick(void)
+{
+    unsigned mask = 0;
+    for (int s = SHADOW_MOVE_SLOTS; s < SHADOW_CHAIN_INSTANCES; s++)
+        if (shadow_chain_slots[s].active && shadow_chain_slots[s].instance)
+            mask |= 1u << (s - SHADOW_MOVE_SLOTS);
+    skipback_stems_want_aux(mask);
+}
 
 /* Report ROUTE_EXTERNAL ring-full drops at ~1 Hz, and only when there are any.
  * Silent on an idle device by construction: no drops, no line. Reports the
@@ -1245,6 +1260,7 @@ static void *worker_main(void *arg) {
          * own edge-triggered read raced Move's Settings.json rewrite. */
         if (tick % 7 == 0 || move_model_sync_misaligned()) shadow_poll_current_set();
         move_model_sync_housekeep();   /* liveness -> UI; expire an unresolvable misalignment */
+        if (tick % 5 == 0) aux_stems_tick();      /* ~1 Hz: lazy aux skipback stems */
         shadow_save_state_service();   /* the slot mix mutators only ask */
         shadow_mix_log_service();      /* ...and only count; the log is here */
         tick++;

@@ -2351,6 +2351,9 @@ func (ru *RemoteUI) extrasDone(slot uint8, comp string) {
 // actually moved are sent.
 const extrasHeartbeat = 500 * time.Millisecond
 
+// remoteUISlots is every chain slot, aux included: SHADOW_CHAIN_INSTANCES.
+const remoteUISlots = 8
+
 func (ru *RemoteUI) extrasHeartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(extrasHeartbeat)
 	defer ticker.Stop()
@@ -2363,7 +2366,7 @@ func (ru *RemoteUI) extrasHeartbeatLoop(ctx context.Context) {
 		if ru.ensureShm() == nil {
 			continue
 		}
-		for slot := uint8(0); slot < 4; slot++ {
+		for slot := uint8(0); slot < remoteUISlots; slot++ {
 			subs := ru.subscribedClients(slot)
 			if len(subs) == 0 {
 				continue // nobody is looking: never touch the param channel

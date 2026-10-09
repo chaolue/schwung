@@ -331,6 +331,11 @@ const body = [
     "let clipLabelValue = \"\";",
     "let clipLabelArgs = [];",
     "function slotClipLabel(s) { clipLabelArgs.push(s); return clipLabelValue; }",
+    // An AUX slot (no Move track) gets no automation row. The REAL predicate
+    // and the real counts, lifted line-for-line rather than restated.
+    src.match(/^const SHADOW_UI_SLOTS = \d+;$/m)[0],
+    src.match(/^const SHADOW_MOVE_SLOTS = \d+;$/m)[0],
+    src.match(/^function isAuxSlot\(slot\) \{.*\}$/m)[0],
     grab("moduleMenuEntries"),
     grab("componentTrailingMenus"),
     "return {",
@@ -423,6 +428,16 @@ const clipArgs = harness.clipLabelArgs();
 if (!clipArgs.length || clipArgs[clipArgs.length - 1] !== 1)
     fail("the clip name must be asked for THIS slot -- a call passing another slot still " +
          "renders a plausible row. Got " + JSON.stringify(clipArgs));
+
+// An AUX slot has no Move track, so no clips and nothing to clear: the row
+// is omitted, not offered to do nothing.
+harness.setChainConfigs({ 1: { synth: { module: "obxd" } }, 2: { synth: null },
+                          5: { synth: { module: "obxd" } } });
+const auxRun = harness.run(5, "synth", "synth");
+if (!auxRun[1] || auxRun[1].name !== "Module")
+    fail("an aux slot with a module must still get its Module page, got " + JSON.stringify(auxRun));
+if (auxRun[1].entries.some((e) => e.action === "clear_component_lanes"))
+    fail("the module page of an aux slot must not offer Clear Automation -- it has no clips");
 harness.setClipLabel("");
 
 // The Add to List value is the number of lists holding the module, and BLANK

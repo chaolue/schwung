@@ -125,7 +125,8 @@ func TestPerfVersionMismatchNamesBothVersions(t *testing.T) {
 
 // The offset block is hand-mirrored from the C header, and the derived ones are
 // written as arithmetic so a cap change cannot leave two of them disagreeing.
-// This pins the arithmetic against the numbers dumped from the compiler.
+// This pins the arithmetic against the numbers dumped from the compiler
+// (re-dumped at PERF_CHAIN_SLOTS 8, the aux slots; sizeof is 1072).
 func TestPerfOffsetsMatchTheHeader(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -150,21 +151,21 @@ func TestPerfOffsetsMatchTheHeader(t *testing.T) {
 		{"sections", perfOffSections, 96},
 		{"post chunks", perfOffPostChunks, 432},
 		{"slot_render_avg", perfOffSlotRenderAvg, 480},
-		{"slot_render_max", perfOffSlotRenderMax, 512},
-		{"slot_synth_avg", perfOffSlotSynthAvg, 544},
-		{"slot_synth_max", perfOffSlotSynthMax, 576},
-		{"slot_fx_avg", perfOffSlotFxAvg, 608},
-		{"slot_fx_max", perfOffSlotFxMax, 640},
-		{"mfx_avg", perfOffMfxAvg, 672},
-		{"mfx_max", perfOffMfxMax, 736},
-		{"overtake_gen_avg", perfOffOvertakeGenAvg, 800},
-		{"overtake_gen_max", perfOffOvertakeGenMax, 808},
-		{"overtake_fx_avg", perfOffOvertakeFxAvg, 816},
-		{"overtake_fx_max", perfOffOvertakeFxMax, 824},
-		{"slot_probe_burst_max", perfOffProbeBurstMax, 832},
-		{"jack_audio_hits", perfOffJackAudioHits, 836},
-		{"jack_audio_misses", perfOffJackAudioMisses, 840},
-		{"overrun_count", perfOffOverrunCount, 844},
+		{"slot_render_max", perfOffSlotRenderMax, 544},
+		{"slot_synth_avg", perfOffSlotSynthAvg, 608},
+		{"slot_synth_max", perfOffSlotSynthMax, 672},
+		{"slot_fx_avg", perfOffSlotFxAvg, 736},
+		{"slot_fx_max", perfOffSlotFxMax, 800},
+		{"mfx_avg", perfOffMfxAvg, 864},
+		{"mfx_max", perfOffMfxMax, 928},
+		{"overtake_gen_avg", perfOffOvertakeGenAvg, 992},
+		{"overtake_gen_max", perfOffOvertakeGenMax, 1000},
+		{"overtake_fx_avg", perfOffOvertakeFxAvg, 1008},
+		{"overtake_fx_max", perfOffOvertakeFxMax, 1016},
+		{"slot_probe_burst_max", perfOffProbeBurstMax, 1024},
+		{"jack_audio_hits", perfOffJackAudioHits, 1028},
+		{"jack_audio_misses", perfOffJackAudioMisses, 1032},
+		{"overrun_count", perfOffOverrunCount, 1036},
 	} {
 		if c.got != c.want {
 			t.Errorf("offset %s = %d, want %d", c.name, c.got, c.want)

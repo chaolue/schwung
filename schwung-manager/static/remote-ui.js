@@ -55,7 +55,10 @@
     }
 
     // Per-slot cached state.
-    var slots = [makeSlot(), makeSlot(), makeSlot(), makeSlot()];
+    // Every chain slot: Move's four tracks, then the four aux slots.
+    var SLOT_COUNT = 8;
+    var slots = [];
+    for (var si = 0; si < SLOT_COUNT; si++) slots.push(makeSlot());
 
     // Master FX state.
     var masterFx = {
@@ -81,13 +84,13 @@
     // show "checking…" instead of a premature (and alarming) "No tool loaded".
     var tool = { id: "", customUI: null, params: {}, known: false };
 
-    // Read initial slot from URL hash (#slot1, #slot2, #slot3, #slot4, #master-fx, #tool)
+    // Read initial slot from URL hash (#slot1 .. #slot8, #master-fx, #tool)
     var initialSlot = 0;
     (function() {
         var h = location.hash.replace("#", "");
         if (h === "master-fx") initialSlot = "master";
         else if (h === "tool") initialSlot = "tool";
-        else if (/^slot[1-4]$/.test(h)) initialSlot = parseInt(h.charAt(4), 10) - 1;
+        else if (/^slot[1-8]$/.test(h)) initialSlot = parseInt(h.charAt(4), 10) - 1;
     })();
     var activeSlot = initialSlot;
     var ws = null;
@@ -268,7 +271,7 @@
             if (!hasSlot) return;
         }
 
-        if (slot < 0 || slot > 3) return;
+        if (slot < 0 || slot >= SLOT_COUNT) return;
 
         switch (msg.type) {
             case "slot_info":
@@ -317,7 +320,7 @@
     }
 
     function handleCustomUI(slot, msg) {
-        if (slot < 0 || slot > 3) return;
+        if (slot < 0 || slot >= SLOT_COUNT) return;
         var s = slots[slot];
         var comp = msg.component || "synth";
         var url = msg.url || "";

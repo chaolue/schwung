@@ -11,6 +11,7 @@
 
 #include "bus_mix.h"     /* BUS_MIX_SEND_LEVEL_MAX */
 #include "lfo_common.h"  /* LFO_NUM_SHAPES, LFO_NUM_DIVISIONS */
+#include "shadow_constants.h"  /* SHADOW_CHAIN_INSTANCES */
 
 #define SCENE_BUS_REVALIDATE_FRAMES 32
 #define SCENE_BUS_INT_MIN_INTERVAL_MS 50   /* as chain_mod's MOD_INT_ENUM_MIN_INTERVAL_MS */
@@ -121,7 +122,11 @@ static const host_meta_row_t HOST_LFO[] = {
 int scene_host_meta(const char *target, const char *param, scene_bus_meta_t *out) {
     if (!target || !param) return 0;
     const host_meta_row_t *t = NULL;
-    if (strncmp(target, "slot", 4) == 0 && target[4] >= '1' && target[4] <= '4' && !target[5]) t = HOST_SLOT;
+    /* slot1..slot8 -- every chain slot, aux included: a scene can morph an
+     * aux slot's level and pan exactly as it does a Move track's. One digit,
+     * which is what SHADOW_CHAIN_INSTANCES <= 9 buys. */
+    if (strncmp(target, "slot", 4) == 0 && target[4] >= '1' &&
+        target[4] < '1' + SHADOW_CHAIN_INSTANCES && !target[5]) t = HOST_SLOT;
     else if (strcmp(target, "send1") == 0) t = HOST_SEND1;
     else if (strcmp(target, "send2") == 0) t = HOST_SEND2;
     else if (strcmp(target, "mfx_lfo1") == 0 || strcmp(target, "mfx_lfo2") == 0) t = HOST_LFO;

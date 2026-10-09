@@ -227,8 +227,12 @@ export const SLOT_GRID_ACTIONS = [
 /**
  * @param {boolean} hasPreset  whether this slot already holds a saved preset
  * @param {boolean} [hasSplits] whether this slot's synth publishes split_voices
+ * @param {string} [clipLabel]  the clip the clip-scoped automation row acts on
+ * @param {boolean} [isAux]     an AUX slot: no Move track, so no clips and no
+ *                              automation -- the section is omitted, not shown
+ *                              offering clears that can only ever find nothing
  */
-export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
+export function slotGridHierarchy(hasPreset, hasSplits, clipLabel, isAux) {
     const have = { preset: !!hasPreset, splits: !!hasSplits };
     /* NAME THE CLIP THE CLIP-SCOPED ACTION WILL ACT ON.
      *
@@ -267,9 +271,9 @@ export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
             params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key }))
                 .concat([{ level: "sends", label: "Sends" },
                          { level: "lfo1", label: "LFO 1" },
-                         { level: "lfo2", label: "LFO 2" },
-                         { level: "automation", label: "Automation" },
-                         { level: "actions", label: "Actions" }]),
+                         { level: "lfo2", label: "LFO 2" }]
+                        .concat(isAux ? [] : [{ level: "automation", label: "Automation" }])
+                        .concat([{ level: "actions", label: "Actions" }])),
         },
         /* Before the LFOs: a send is a mix decision and belongs beside the
          * values, where a modulation source does not. */
@@ -295,6 +299,7 @@ export function slotGridHierarchy(hasPreset, hasSplits, clipLabel) {
      * And the scopes are a set, not a scatter: this clip, every clip, undo.
      * Three sibling rows make that legible in a way three rows filed between
      * Knob Mapping and Save never did. */
+    if (isAux) return { modes: null, levels };
     levels.automation = {
         label: "Automation", knobs: [], params: [], menu_label: "Automation",
         menu: [
@@ -402,7 +407,8 @@ export function createSlotGridIo(io) {
                 return JSON.stringify(slotGridHierarchy(
                     !!io.hasPreset(),
                     io.hasSplitVoices ? !!io.hasSplitVoices() : false,
-                    io.clipLabel ? io.clipLabel() : ""));
+                    io.clipLabel ? io.clipLabel() : "",
+                    io.isAuxSlot ? !!io.isAuxSlot() : false));
             }
             if (k === "chain_params") {
                 return JSON.stringify(allSlotGridParams((n) => target.targetsFor(n)));

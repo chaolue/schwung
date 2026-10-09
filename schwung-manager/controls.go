@@ -32,7 +32,7 @@ import (
 const (
 	controlsFile      = "controls.json"
 	controlsMaxBytes  = 256 * 1024
-	controlsSlots     = 4
+	controlsSlots     = 8 // every chain slot: Move's four tracks, then the four aux slots
 	controlsMasterFx  = 8
 	controlsMaxFxRead = 8
 )

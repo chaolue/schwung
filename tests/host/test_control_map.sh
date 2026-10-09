@@ -32,7 +32,8 @@ eq("a Master FX target is addressed at slot 0",
    T.targetAddress({ kind: "master", fx: 3, key: "mix", module: "cloudseed" }), { slot: 0, key: "master_fx:fx3:mix" });
 eq("a master setting is addressed at slot 0",
    T.targetAddress(T.normalizeTarget({ kind: "setting", slot: null, key: "master_fx:filter" })), { slot: 0, key: "master_fx:filter" });
-eq("a bad slot is refused", T.normalizeTarget(Object.assign({}, cut, { slot: 4 })), null);
+eq("a bad slot is refused", T.normalizeTarget(Object.assign({}, cut, { slot: 8 })), null);
+eq("an aux slot is a target", T.normalizeTarget(Object.assign({}, cut, { slot: 7 })) !== null, true);
 eq("a key with a colon is refused", T.normalizeTarget(Object.assign({}, cut, { key: "a:b" })), null);
 eq("module identity is never a knob", T.normalizeTarget(Object.assign({}, cut, { key: "module" })), null);
 eq("a param with no module is refused", T.normalizeTarget(Object.assign({}, cut, { module: "" })), null);

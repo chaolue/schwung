@@ -1235,8 +1235,9 @@ A `Buses` action row opens the slot's bus list; a bus's own menu opens its
   by construction, with no loop detection to go wrong. Shift+Vol+Menu opens a
   PICKER over all three FX buses now, and the editor is parameterised by key
   prefix (`master_fx:` / `send1:` / `send2:`) rather than triplicated. A send
-  return belongs to no slot, so it lands in **stems 6 and 7** — without them the
-  four slot stems stop summing to the master the moment a send carries signal.
+  return belongs to no slot, so it lands in **the two send stems** (SendA /
+  SendB, the last two) — without them the slot stems stop summing to the master
+  the moment a send carries signal.
   **Design credit: PR #121 (legsmechanical)**, re-implemented on current `main`
   because that branch's merge-base is 2026-03-04.
 
@@ -1255,11 +1256,12 @@ because it already went through the same sampler**.
 - **A stem is a SLOT, and that is forced, not chosen.** Under Move→Schwung the
   shim builds a slot as `move_track[s] + synth[s]` and *then* runs the slot FX
   on the SUM, so Move's track and Schwung's synth are inseparable after that
-  point — the four slot stems ARE the four tracks, and they sum to the master
-  exactly **until a global send carries signal**. A fifth **Move** stem carries
+  point — slot stems 1-4 ARE the four tracks, and with the **aux slot stems
+  5-8** they sum to the master exactly **until a global send carries signal**.
+  The **Move** stem (after the eight slots) carries
   the mailbox mix for the case Move→Schwung is OFF and there is no split to be
   had; under Move→Schwung it is left INVALID on purpose, or a stem sum would
-  double every instrument. Stems **6 and 7 are the two send returns**, tapped
+  double every instrument. The last two stems are **the two send returns**, tapped
   post-send-chain at the return level — the identical block `bus_mix_send()`
   adds to the master — because a shared return belongs to no slot and would
   otherwise be in the master file and in none of the stems, silently.
@@ -1275,6 +1277,11 @@ because it already went through the same sampler**.
   open would start the file at the first sound rather than at t=0.
 - Skipback stems are capped at **60 s** against the master's 5 minutes (seven
   rings at the maximum is ~370 MB; 60 s × 7 is ~71 MB) and are a SUFFIX of it.
+  **The four aux slots' Skipback buffers are allocated LAZILY**, only once that
+  aux slot holds a module (`skipback_stems_want_aux`), so a device that never
+  uses one still spends ~71 MB; each aux slot in use adds ~10 MB (~111 MB with
+  all four). `test_save_stems_contract.sh` keeps the 80 MB budget for the
+  up-front seven and a separate 120 MB ceiling for the worst case.
   The cap was NOT shortened to restore the old "same as one master buffer"
   anchor — that would silently truncate the stems of anyone already running a
   60 s Skipback.
@@ -1543,7 +1550,7 @@ Shift+Capture saves last 30 s. Same source as sampler. Output: `Samples/Schwung/
 
 ### Snapshot / recall — `docs/SHADOW_UI.md`
 
-Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.
+Shift+Copy snapshots all 8 slots (aux included) + 8 Master FX, Shift+Delete puts it back.
 
 - **A recall writes STATE, never SHAPE.** `load_file` is what restores module
   identity and it REINSTANTIATES — cutting reverb tails, resetting arp phase,
@@ -1629,10 +1636,45 @@ SHM segments: `/schwung-audio` (mixed shadow output), `/schwung-control` (`shado
 
 `shadow_control_t.ui_flags`: `JUMP_TO_SLOT (0x01)`, `JUMP_TO_MASTER_FX (0x02)`, `JUMP_TO_OVERTAKE (0x04)`. **Flags 0x0100+ live in `ui_flags_ext`, not here** — the 8-bit field is full and widening it moves every field behind it.
 
+### Eight slots, and only four are Move's tracks — `docs/SHADOW_UI.md`
+
+`SHADOW_CHAIN_INSTANCES` is **8**; `SHADOW_MOVE_SLOTS` is **4**. Slots 4-7
+are **AUX slots**: Schwung-only instruments played from MIDI on their receive
+channel (5-8 by default: external USB, or anything Move sends there), with
+their own mixer, persistence, scenes and stems.
+
+- **Every path that reaches for a MOVE TRACK stops at four** —
+  `shadow_slot_is_move_track()`. The Link Audio read is the dangerous one:
+  `shim_move_channel_count()` counts MAIN too, and it was only the slot count
+  that kept slot 4 from reading it, so a read bounded by the slot count sums
+  Move's whole master mix into aux slot 5. Publishing (ME-N), mute / solo /
+  volume follow, the selected track, Track buttons and Shift+knob are all
+  Move's four only.
+- **An aux slot has no track, and says so with `-1`** to
+  `chain_set_clip_phase` — the lane code's own "no track". Lanes, p-locks and
+  step chance refuse there (phase unknown, never phase 0), and the
+  Automation rows are omitted from all three slot-settings surfaces.
+- **`shadow_ui_state_t` was NOT resized**: its v2 arrays are four wide forever
+  and the aux slots are an APPENDED v3 block (`SHADOW_UI_BUFFER_SIZE` 1024).
+  Reach any slot through the `shadow_ui_state_*()` accessors; a reader facing a
+  v2 writer trusts four slots whatever `slot_count` says.
+- **A set saved before the aux slots resets them** (both the C and the JS
+  loader) — a stale aux SOLO from the previous set would silence every track.
+  The shim's state file writes eight values in the `[a, b, c, d, ...]` shape a
+  four-value sscanf still parses, so a downgrade reads Move's four.
+- **Reaching an aux slot: tap the SAME Track button again.** From slot N's
+  chain editor a second Track N tap flips to slot N+4 and back
+  (`trackTapTarget`); the gesture that OPENS the UI from Move never flips. The
+  chain editor's left-margin marks show the bank — dotted for the aux one.
+- **Every copy of the count is pinned** (C, UI, CC map, manager Go / JS /
+  template, stems, CPU page) by `tests/host/test_aux_slots.sh`; the runtime
+  half is `test_aux_slots.c`. CPU is the real limit: all slots render serially
+  on the SPI callback, so eight heavy synths may not fit a frame.
+
 ### Shadow Slot Features
 
-Each of the 4 slots has:
-- **Receive channel**: 1–4 (default) or All (−1)
+Each of the 8 slots (Move's four, then the four aux slots) has:
+- **Receive channel**: its own number, 1–8 (default), or All (−1)
 - **Forward channel**: 1–16 or −1 (auto: remap to receive ch, or passthrough if receive=All) or −2 (THRU: preserve original ch). Modules can declare `default_forward_channel` in capabilities.
 - **Volume**, **state persistence** (synth + FX + MIDI FX).
 

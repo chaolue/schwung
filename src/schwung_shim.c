@@ -2119,9 +2119,6 @@ static void shadow_overtake_dsp_unload(void) {
 /* Per-slot render breakdown counters (added 2026-05-15 for render spike hunt).
  * Forward-declared here so shadow_inprocess_render_to_buffer can update them;
  * snapshot/reset live with the other spi_timing statics further below. */
-#ifndef SHADOW_CHAIN_INSTANCES
-#define SHADOW_CHAIN_INSTANCES 4
-#endif
 static uint64_t spi_slot_render_max[SHADOW_CHAIN_INSTANCES];
 static uint64_t spi_slot_synth_max[SHADOW_CHAIN_INSTANCES];  /* render_block only */
 static uint64_t spi_slot_fx_max[SHADOW_CHAIN_INSTANCES];     /* chain_process_fx only */
@@ -2290,6 +2287,11 @@ static void shadow_inprocess_render_to_buffer(void) {
              * only has to tell it the truth. The transport service knows:
              * a Stop (0xFC) clears `running`, and with no active source
              * the beat position is negative. */
+            /* AN AUX SLOT HAS NO MOVE TRACK, and says so with track -1 -- the
+             * lane code's own "no track" (every write, clear and copy returns
+             * on lane_track < 0) -- rather than a number Move does not have.
+             * Its phase is already unknown: shadow_slot_clip_phase refuses
+             * past MM_TRACKS. */
             if (shadow_chain_set_clip_phase) {
                 double lane_phase = 0.0, lane_loop = 0.0;
                 double lane_fp[4] = { 0.0, 0.0, 0.0, -1.0 };
@@ -2301,7 +2303,8 @@ static void shadow_inprocess_render_to_buffer(void) {
                     lane_ok = 0;
                 shadow_chain_set_clip_phase(shadow_chain_slots[s].instance,
                                             lane_ok, lane_phase, lane_loop,
-                                            s, lane_clip, lane_fp_ok, lane_fp);
+                                            shadow_slot_is_move_track(s) ? s : -1,
+                                            lane_clip, lane_fp_ok, lane_fp);
                 /* Step chance's A:B clock, from the same model snapshot. */
                 if (shadow_chain_set_clip_pass)
                     shadow_chain_set_clip_pass(shadow_chain_slots[s].instance,
@@ -3110,7 +3113,11 @@ static void shadow_inprocess_mix_from_buffer(void) {
         /* Line the tracks up at the shallowest one's depth before reading
          * any of them -- a decision across slots, so not per read. */
         link_audio_align_tick(shadow_in_audio_shm, la_channel_count);
-        for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < la_channel_count; s++) {
+        /* MOVE'S TRACKS ONLY. The channel count includes Main (the IN ring's
+         * last slot), and it was the slot count alone that kept slot 4 from
+         * reading it -- an aux slot 4 bounded only by la_channel_count would
+         * have had Move's whole master mix summed into it. */
+        for (int s = 0; s < SHADOW_MOVE_SLOTS && s < la_channel_count; s++) {
             int r = shim_read_move_channel(s, la_cache[s], FRAMES_PER_BLOCK);
             la_cache_valid[s] = (r != 0);
             if (r == LA_READ_REAL) la_real++;
@@ -3301,13 +3308,18 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     shadow_slot_fx_idle[s] = 0;
                 }
 
-                /* Capture for Link Audio publisher */
+                /* The stem tap for this slot. Under Move->Schwung fx_buf is
+                 * Move's track N plus this slot's synth, already through the
+                 * slot FX chain -- and for an AUX slot, the synth alone. It
+                 * sat inside the publisher guard below while every slot had a
+                 * Link Audio channel; an aux slot has none, and would have
+                 * been in the master file and in no stem. */
+                shadow_stem_store_slot(s, fx_buf,
+                                       shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
+
+                /* Capture for Link Audio publisher -- Move's tracks only */
                 if (s < LINK_AUDIO_SHADOW_CHANNELS) {
                     float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
-                    /* Same signal, same gain — the stem tap for this slot.
-                     * Under Move->Schwung fx_buf is Move's track N plus this
-                     * slot's synth, already through the slot FX chain. */
-                    shadow_stem_store_slot(s, fx_buf, cap_vol);
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)fx_buf[i] * cap_vol);
                     /* Write to publisher shared memory for link_subscriber */
@@ -3740,7 +3752,10 @@ skip_la_rebuild:
     _Static_assert(SAMPLER_STEM_COUNT == SAMPLER_STEM_SEND_A + SEND_BUSES,
                    "every send bus needs a stem, and the sends are the last stems");
     _Static_assert(SAMPLER_STEM_MOVE == SHADOW_CHAIN_INSTANCES,
-                   "the Move stem sits immediately after the four slot stems");
+                   "the Move stem sits immediately after the slot stems");
+    _Static_assert(SAMPLER_STEM_AUX_FIRST == SHADOW_MOVE_SLOTS &&
+                   SAMPLER_STEM_AUX_FIRST + SAMPLER_STEM_AUX_COUNT == SHADOW_CHAIN_INSTANCES,
+                   "the lazily allocated stems are exactly the aux slots");
 
     /* Apply master FX chain. Under non-rebuild, MFX processes ME only; under
      * rebuild_from_la, mailbox contains reconstructed ME tracks and MFX

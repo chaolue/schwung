@@ -73,11 +73,11 @@ static void shadow_slot_clear_all_modules(void *instance);
 /* Chain slot state */
 shadow_chain_slot_t shadow_chain_slots[SHADOW_CHAIN_INSTANCES];
 volatile int shadow_solo_count = 0;
+/* No default patch for any slot - the user must select. Left to the zero
+ * initialiser rather than listed, so raising the slot count cannot leave a
+ * NULL where every reader expects a string. */
 const char *shadow_chain_default_patches[SHADOW_CHAIN_INSTANCES] = {
-    "",  /* No default patch - user must select */
-    "",
-    "",
-    ""
+    [0 ... SHADOW_CHAIN_INSTANCES - 1] = ""
 };
 
 /* Chain DSP plugin state */
@@ -966,7 +966,10 @@ void shadow_chain_load_config(void) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (size <= 0 || size > 4096) {
+    /* 16 KB, not 4: eight slots' patches beside a Master FX chain outgrew
+     * it, and an oversized file is ignored WHOLE -- every slot back to its
+     * default at boot, silently. */
+    if (size <= 0 || size > 16384) {
         fclose(f);
         shadow_ui_state_refresh();
         return;
@@ -1096,20 +1099,21 @@ void shadow_ui_state_update_slot(int slot) {
     if (!ui_state) return;
     if (slot < 0 || slot >= SHADOW_UI_SLOTS) return;
     int ch = shadow_chain_slots[slot].channel;
-    ui_state->slot_channels[slot] = (ch < 0) ? 0 : (uint8_t)(ch + 1);
-    ui_state->slot_volumes[slot] = (uint16_t)(shadow_chain_slots[slot].volume * 100.0f);
-    ui_state->slot_forward_ch[slot] = (int8_t)shadow_chain_slots[slot].forward_channel;
-    strncpy(ui_state->slot_names[slot],
-            shadow_chain_slots[slot].patch_name,
-            SHADOW_UI_NAME_LEN - 1);
-    ui_state->slot_names[slot][SHADOW_UI_NAME_LEN - 1] = '\0';
+    /* Through the accessors: slots 4.. live in the v3 aux block, not past the
+     * end of the four-wide v2 arrays (shadow_constants.h). */
+    *shadow_ui_state_channel(ui_state, slot) = (ch < 0) ? 0 : (uint8_t)(ch + 1);
+    *shadow_ui_state_volume(ui_state, slot) = (uint16_t)(shadow_chain_slots[slot].volume * 100.0f);
+    *shadow_ui_state_forward(ui_state, slot) = (int8_t)shadow_chain_slots[slot].forward_channel;
+    char *name = shadow_ui_state_name(ui_state, slot);
+    strncpy(name, shadow_chain_slots[slot].patch_name, SHADOW_UI_NAME_LEN - 1);
+    name[SHADOW_UI_NAME_LEN - 1] = '\0';
     /* v2. Every path that changes these already lands here — shadow_apply_mute
      * calls us, shadow_toggle_solo loops us over all slots (solo is exclusive,
      * so one press moves four), and the init/load paths go through
      * shadow_ui_state_refresh. Publishing here rather than at each mutation is
      * what keeps that true for the next one. */
-    ui_state->slot_muted[slot] = shadow_chain_slots[slot].muted ? 1 : 0;
-    ui_state->slot_soloed[slot] = shadow_chain_slots[slot].soloed ? 1 : 0;
+    *shadow_ui_state_muted(ui_state, slot) = shadow_chain_slots[slot].muted ? 1 : 0;
+    *shadow_ui_state_soloed(ui_state, slot) = shadow_chain_slots[slot].soloed ? 1 : 0;
 }
 
 void shadow_ui_state_refresh(void) {
@@ -1143,15 +1147,19 @@ void shadow_mix_log_service(void) {
     if (seq == mix_log_seen) return;
     uint32_t changes = seq - mix_log_seen;
     mix_log_seen = seq;
-    int mu[4] = {0}, so[4] = {0};
-    for (int i = 0; i < SHADOW_CHAIN_INSTANCES && i < 4; i++) {
-        mu[i] = shadow_chain_slots[i].muted ? 1 : 0;
-        so[i] = shadow_chain_slots[i].soloed ? 1 : 0;
+    /* One digit per slot, Move's four then the aux slots: "1000 0000". */
+    char mu[SHADOW_CHAIN_INSTANCES + 2], so[SHADOW_CHAIN_INSTANCES + 2];
+    int k = 0;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (i == SHADOW_MOVE_SLOTS) { mu[k] = ' '; so[k] = ' '; k++; }
+        mu[k] = shadow_chain_slots[i].muted ? '1' : '0';
+        so[k] = shadow_chain_slots[i].soloed ? '1' : '0';
+        k++;
     }
+    mu[k] = '\0'; so[k] = '\0';
     char msg[128];
-    snprintf(msg, sizeof(msg), "Mix: muted=[%d,%d,%d,%d] soloed=[%d,%d,%d,%d] (%u change%s)",
-             mu[0], mu[1], mu[2], mu[3], so[0], so[1], so[2], so[3],
-             changes, changes == 1 ? "" : "s");
+    snprintf(msg, sizeof(msg), "Mix: muted=[%s] soloed=[%s] (%u change%s)",
+             mu, so, changes, changes == 1 ? "" : "s");
     shadow_log(msg);
 }
 
@@ -1213,15 +1221,19 @@ void shadow_apply_solo(int slot, int is_soloed) {
     shadow_request_save_state();
 }
 
-/* Set every slot's mute and solo at once, as Move's Song.abl states them.
- * Copies the file as-is; Move's solo is exclusive, so it names at most one. */
+/* Set every MOVE slot's mute and solo at once, as Move's Song.abl states
+ * them. Copies the file as-is; Move's solo is exclusive, so it names at most
+ * one. The aux slots have no track in the file and keep what their own set
+ * config gave them -- but they are still COUNTED, or a soloed aux slot would
+ * be audible with shadow_solo_count claiming nothing is soloed. */
 void shadow_apply_mix_state(const int muted[4], const int soloed[4]) {
-    int n = 0;
-    for (int i = 0; i < SHADOW_CHAIN_INSTANCES && i < 4; i++) {
+    for (int i = 0; i < SHADOW_MOVE_SLOTS; i++) {
         shadow_chain_slots[i].muted = muted[i] ? 1 : 0;
         shadow_chain_slots[i].soloed = soloed[i] ? 1 : 0;
-        if (shadow_chain_slots[i].soloed) n++;
     }
+    int n = 0;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
+        if (shadow_chain_slots[i].soloed) n++;
     shadow_solo_count = n;
     for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++)
         shadow_ui_state_update_slot(i);
@@ -3196,10 +3208,8 @@ void shadow_inprocess_handle_ui_request(void) {
         strncpy(shadow_chain_slots[slot].patch_name, "", sizeof(shadow_chain_slots[slot].patch_name) - 1);
         shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
         shadow_ui_state_t *ui_state = host.shadow_ui_state_ptr ? *host.shadow_ui_state_ptr : NULL;
-        if (ui_state && slot < SHADOW_UI_SLOTS) {
-            strncpy(ui_state->slot_names[slot], "", SHADOW_UI_NAME_LEN - 1);
-            ui_state->slot_names[slot][SHADOW_UI_NAME_LEN - 1] = '\0';
-        }
+        if (ui_state && slot < SHADOW_UI_SLOTS)
+            shadow_ui_state_name(ui_state, slot)[0] = '\0';
         return;
     }
 
@@ -3283,10 +3293,8 @@ void shadow_process_fade_completions(void) {
             strncpy(shadow_chain_slots[slot].patch_name, "", sizeof(shadow_chain_slots[slot].patch_name) - 1);
             shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
             shadow_ui_state_t *ui_state = host.shadow_ui_state_ptr ? *host.shadow_ui_state_ptr : NULL;
-            if (ui_state && slot < SHADOW_UI_SLOTS) {
-                strncpy(ui_state->slot_names[slot], "", SHADOW_UI_NAME_LEN - 1);
-                ui_state->slot_names[slot][SHADOW_UI_NAME_LEN - 1] = '\0';
-            }
+            if (ui_state && slot < SHADOW_UI_SLOTS)
+                shadow_ui_state_name(ui_state, slot)[0] = '\0';
             fade->pending_clear = 0;
             shadow_log("Fade completion: slot cleared");
 

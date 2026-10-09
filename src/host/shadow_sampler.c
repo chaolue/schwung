@@ -145,14 +145,15 @@ static char sampler_pending_path[256] = "";
 #define SAMPLER_CMD_PATH_FILE "/data/UserData/schwung/sampler_cmd_path.txt"
 
 /* ---------------------------------------------------------------- stems ---
- * See shadow_sampler.h for what a stem IS and why there are seven of them.
+ * See shadow_sampler.h for what a stem IS and why there are eleven of them.
  *
- * Order is load-bearing: the shim taps slots 0-3 by slot index, the Move stem
+ * Order is load-bearing: the shim taps slots 0-7 by slot index, the Move stem
  * at SAMPLER_STEM_MOVE and the two send returns at SAMPLER_STEM_SEND_A/_B, and
  * these names are the file suffixes those indices are written under. */
 
 const char *const sampler_stem_names[SAMPLER_STEM_COUNT] = {
-    "Slot1", "Slot2", "Slot3", "Slot4", "Move", "SendA", "SendB"
+    "Slot1", "Slot2", "Slot3", "Slot4", "Slot5", "Slot6", "Slot7", "Slot8",
+    "Move", "SendA", "SendB"
 };
 
 typedef struct {
@@ -227,8 +228,9 @@ void sampler_init(const sampler_host_t *host, float *sampler_set_tempo_ptr) {
         }
     }
     /* The stem rings, allocated up front for the same reason: the RT
-     * half of a recording start only resets positions. ~2.4 MB (seven rings
-     * of SAMPLER_RING_BUFFER_SIZE, since the send returns became stems),
+     * half of a recording start only resets positions. ~3.9 MB (eleven rings
+     * of SAMPLER_RING_BUFFER_SIZE, since the send returns and then the aux
+     * slots became stems),
      * resident
      * whether or not stems are ever switched on — the alternative is a
      * malloc on the path that arms a take, and a failure there would have to
@@ -1562,6 +1564,10 @@ int skipback_stems_get_seconds(void) {
     return skipback_stem_seconds_actual;
 }
 
+static int skipback_stem_is_lazy(int i) {
+    return i >= SAMPLER_STEM_AUX_FIRST && i < SAMPLER_STEM_AUX_FIRST + SAMPLER_STEM_AUX_COUNT;
+}
+
 static void skipback_stems_free(void) {
     for (int i = 0; i < SAMPLER_STEM_COUNT; i++) {
         free(skipback_stem_buffer[i]);
@@ -1593,7 +1599,12 @@ static void skipback_stems_reconcile(void) {
 
     skipback_stems_free();
     size_t samples = (size_t)SAMPLER_SAMPLE_RATE * (size_t)sec * (size_t)SAMPLER_NUM_CHANNELS;
+    int allocated = 0;
     for (int i = 0; i < SAMPLER_STEM_COUNT; i++) {
+        /* The aux slots' buffers wait for skipback_stems_want_aux: a device
+         * that never uses an aux slot spends exactly what it did before. */
+        if (skipback_stem_is_lazy(i)) continue;
+        allocated++;
         skipback_stem_buffer[i] = (int16_t *)calloc(samples, sizeof(int16_t));
         if (!skipback_stem_buffer[i]) {
             /* All-or-nothing: six of seven buffers means one stem is silently
@@ -1609,9 +1620,48 @@ static void skipback_stems_reconcile(void) {
     skipback_stem_seconds_actual = sec;
     char msg[128];
     snprintf(msg, sizeof(msg), "Skipback: allocated %d stem buffers, %ds each (%.1f MB total)",
-             SAMPLER_STEM_COUNT, sec,
-             (double)(samples * sizeof(int16_t) * SAMPLER_STEM_COUNT) / (1024.0 * 1024.0));
+             allocated, sec,
+             (double)(samples * sizeof(int16_t) * (size_t)allocated) / (1024.0 * 1024.0));
     s_host.log(msg);
+}
+
+/* An AUX slot's stem buffer, allocated on first use. Published with a release
+ * store after the calloc, so the audio thread -- which acquire-loads each
+ * pointer and skips a NULL one -- sees either nothing or a whole zeroed ring.
+ * Zeros are the truth for the time before it existed: the slot was silent.
+ * The shared write position keeps it aligned with the others from its first
+ * block. Trylock, because a resize may be holding the mutex for a while and
+ * this is asked again on the next pass anyway. */
+void skipback_stems_want_aux(unsigned aux_mask) {
+    if (!aux_mask || !skipback_stem_buffer[0]) return;
+    int missing = 0;
+    for (int k = 0; k < SAMPLER_STEM_AUX_COUNT; k++)
+        if (((aux_mask >> k) & 1u) &&
+            !__atomic_load_n(&skipback_stem_buffer[SAMPLER_STEM_AUX_FIRST + k], __ATOMIC_ACQUIRE))
+            missing = 1;
+    if (!missing) return;
+    if (pthread_mutex_trylock(&skipback_resize_mutex) != 0) return;
+    size_t samples = skipback_stem_total_samples;
+    if (skipback_stem_buffer[0] && samples > 0) {
+        for (int k = 0; k < SAMPLER_STEM_AUX_COUNT; k++) {
+            const int i = SAMPLER_STEM_AUX_FIRST + k;
+            if (!((aux_mask >> k) & 1u) || skipback_stem_buffer[i]) continue;
+            int16_t *buf = (int16_t *)calloc(samples, sizeof(int16_t));
+            char msg[128];
+            if (!buf) {
+                snprintf(msg, sizeof(msg), "Skipback: stem buffer %s allocation failed -- "
+                         "that slot is missing from skipback stems", sampler_stem_names[i]);
+                s_host.log(msg);
+                continue;
+            }
+            __atomic_store_n(&skipback_stem_buffer[i], buf, __ATOMIC_RELEASE);
+            snprintf(msg, sizeof(msg), "Skipback: allocated stem buffer %s (%.1f MB)",
+                     sampler_stem_names[i],
+                     (double)(samples * sizeof(int16_t)) / (1024.0 * 1024.0));
+            s_host.log(msg);
+        }
+    }
+    pthread_mutex_unlock(&skipback_resize_mutex);
 }
 
 void skipback_capture_stems(const int16_t *const *stems, int count) {
@@ -1626,12 +1676,16 @@ void skipback_capture_stems(const int16_t *const *stems, int count) {
 
     if (count > SAMPLER_STEM_COUNT) count = SAMPLER_STEM_COUNT;
     for (int i = 0; i < SAMPLER_STEM_COUNT; i++) {
+        /* An aux stem not yet allocated (skipback_stems_want_aux) is skipped;
+         * every other buffer exists whenever buffer 0 does. */
+        int16_t *buf = __atomic_load_n(&skipback_stem_buffer[i], __ATOMIC_ACQUIRE);
+        if (!buf) continue;
         const int16_t *src = (i < count) ? stems[i] : NULL;
         wp = start;
         for (size_t j = 0; j < block_samples; j++) {
             /* Silence for an absent stem, not a skip: one shared write_pos
              * keeps them all sample-aligned, and a short one would slide. */
-            skipback_stem_buffer[i][wp] = src ? src[j] : 0;
+            buf[wp] = src ? src[j] : 0;
             wp = (wp + 1) % total_samples;
         }
     }
@@ -1926,6 +1980,9 @@ static void *skipback_writer_func(void *arg) {
     int stems_kept = 0;
     if (want_stems) {
         for (int i = 0; i < SAMPLER_STEM_COUNT; i++) {
+            /* An aux slot never used has no buffer, and so no file -- the
+             * same outcome as a silent one. */
+            if (!skipback_stem_buffer[i]) continue;
             char spath[300];
             sampler_stem_path_build(spath, sizeof(spath), path, sampler_stem_names[i]);
             stems_kept += skipback_write_wav(spath, skipback_stem_buffer[i],

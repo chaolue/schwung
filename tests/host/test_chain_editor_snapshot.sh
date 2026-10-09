@@ -1719,9 +1719,10 @@ function renderSettingsList(c) {
    * That is the branch that carries the two plain `Send A` / `Send B` rows: the
    * Send Mixer they replace is a knob grid, and a grid has nothing for a screen
    * reader to read out, so the list must keep a way to reach the slot sends. */
+  /* isAuxSlot is FALSE: every case here renders slot 0, one of Moves four. */
   const getChainSettingsItems = lift("getChainSettingsItems",
-    ["isExistingPreset", "chainSynthSplits", "CHAIN_SETTINGS_ITEMS", "paramPagesEnabled"])(
-    isExistingPreset, w.chainSynthSplits, CHAIN_SETTINGS_ITEMS, () => false);
+    ["isExistingPreset", "chainSynthSplits", "CHAIN_SETTINGS_ITEMS", "paramPagesEnabled", "isAuxSlot"])(
+    isExistingPreset, w.chainSynthSplits, CHAIN_SETTINGS_ITEMS, () => false, () => false);
 
   Object.assign(BUS_CTX, {
     slots: [{ name: c.preset || "Untitled" }],
