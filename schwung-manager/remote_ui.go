@@ -81,6 +81,9 @@ type RemoteUI struct {
 	extrasLast  map[string]time.Time
 	extrasBusy  map[string]bool
 	extrasValue map[string]string
+
+	// mix is the Mixer tab's state — see remote_ui_mixer.go.
+	mix mixerState
 }
 
 // ruClient represents a single WebSocket connection.
@@ -100,6 +103,10 @@ type ruClient struct {
 	masterFxSub bool
 	// whether this client is subscribed to the active overtake tool's UI
 	toolSub bool
+	// whether this client is on the Mixer tab, and whether mixerLoop has sent
+	// it a full mixer_state since (only then may it be sent deltas).
+	mixerSub    bool
+	mixerSynced bool
 	// rev-gated tool polling: skip the heavy "state" snapshot read unless the
 	// tool's cheap "rui_poll" digest (rev:on:tick:bpm) shows a content change.
 	// Touched only from this client's WS read goroutine. toolSynced=false until
@@ -329,6 +336,7 @@ func (ru *RemoteUI) Start(ctx context.Context) {
 	go ru.toolTickLoop(ctx)
 	go ru.setRingConnectLoop(ctx)
 	go ru.extrasHeartbeatLoop(ctx)
+	go ru.mixerLoop(ctx)
 }
 
 // setRingConnectLoop connects the web param set ring EAGERLY at startup,
@@ -476,6 +484,12 @@ func (ru *RemoteUI) readLoop(ctx context.Context, c *ruClient) {
 			ru.handleRefetchTool(ctx, c)
 		case "set_master_fx_param":
 			ru.handleSetMasterFxParam(ctx, c, msg)
+		case "subscribe_mixer":
+			ru.handleSubscribeMixer(ctx, c)
+		case "unsubscribe_mixer":
+			ru.handleUnsubscribeMixer(c)
+		case "set_mixer_param":
+			ru.handleSetMixerParam(ctx, c, msg)
 		default:
 			ru.sendError(ctx, c, "unknown message type: "+msg.Type)
 		}
@@ -1690,6 +1704,10 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 			slotChanges := make(map[uint8]map[string]string)
 			masterFxChanges := make(map[string]string)
 			for _, c := range changes {
+				// The Mixer takes what it needs from every change first; it
+				// keys on the param name alone, so this costs a few string
+				// compares per change and nothing when nobody is looking.
+				ru.mixerNotify(ctx, c.Slot, c.Key, c.Value)
 				if c.Slot == 0 && c.Key == overtakeParamPrefix+"rui_poll" {
 					// F4 push: the shim probes the overtake tool's rui_poll
 					// digest and pushes changes here. Don't forward raw —

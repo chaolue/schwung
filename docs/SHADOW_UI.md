@@ -2172,3 +2172,89 @@ So a script that tears Move down must signal shadow_ui FIRST and wait, and only
 then kill MoveOriginal. `launch-standalone.sh` does (bounded at 3 s);
 `restart-move.sh` does not need to, because the restart path raises
 `should_exit` before it runs. `tests/host/test_shadow_ui_requested_exit.sh`.
+
+### The Remote UI Mixer: one source per value, and a second router that did not know the send buses
+
+The **Mixer** tab of schwung-manager's Remote UI (`/remote-ui#mixer`) puts every
+slot's level, mute, solo, pan and Send A / Send B (Move's four and the four aux
+slots), and the two send returns plus
+the A→B feed, on one page. It writes the SAME keys as Slot Settings and the
+E16/EC4 Mixer (`surfaceMixerIo`) — `slot:volume`, `slot:muted`, `slot:soloed`,
+`slot:pan`, `buses:main_send<N>`, `send<N>:return`, `send1:to_send2` — so the
+browser, a hardware surface, the slot grid and Move's own track knob move one
+value. Server: `schwung-manager/remote_ui_mixer.go`; client:
+`static/remote-ui-mixer.js`.
+
+**Every value has exactly ONE source.**
+
+- **Level, mute, solo and the patch name come from `/schwung-ui`**
+  (`shadow_ui_state_t`, `schwung-manager/shmuistate.go`), polled at 20 Hz. It
+  costs nothing to read, and it is the ONLY place Move-driven changes appear:
+  Move's track volume/mute/solo reach a slot through `shadow_apply_volume` /
+  `_mute` / `_solo` on the SPI thread, which never touch the web notify ring. A
+  browser fed only by the ring sat still while the real level moved. These are
+  deliberately NOT also taken from the notify ring: two sources reporting at
+  different moments move the fader back and forth on every turn.
+- **Pan, sends and returns are in no segment**, so: the notify ring for writes
+  made through the param channel or the web set ring; one full read on
+  subscribe, after `set_aligned` (a set switch restores all of them, unnotified)
+  and when a slot's patch name changes (a patch brings its own send levels); and
+  a one-read-per-second round-robin backstop. A read is ~2.8 ms on the channel
+  shadow_ui draws with, so they are never read in a burst or per frame.
+- **One goroutine sends every mixer message.** Notifications and reads only
+  update a store and kick `mixerLoop`, so a browser that just subscribed is sent
+  its full `mixer_state` by the same goroutine that sends deltas and can never
+  receive a snapshot older than a delta it already applied. A delta that could
+  not be delivered marks that client for a full resync instead of being lost. A
+  read stamps the store's sequence before it starts, so a slow read cannot
+  overwrite a value notified while it was in flight.
+- **Absent is unknown.** A key `mixer_state` does not carry has a disabled
+  control reading "—" — the tri-state read rule, on the wire.
+
+**Whole percent could not say a quiet level.** `slot_volumes` in `/schwung-ui`
+is a percent, so -45 dB (0.0056) read as 0 and a slot that was playing showed
+-∞. `shadow_ui_state_t` version **4** appends `float slot_volume_lin[]` (every
+slot, aux included, after the v3 aux block); the manager reads it on v4 and
+falls back to percent before it.
+`tests/host/test_manager_ui_state_offsets.sh` pins every offset the Go reader
+names against `offsetof()`, the way `test_manager_shm_offsets.sh` does for
+`shadow_control_t`.
+
+**The web set ring is a SECOND ROUTER, and it did not know the send buses.**
+Remote UI writes go through `shadow_drain_web_param_set` →
+`shadow_direct_set_param`, which routed `master_fx:` and slot keys and handed
+everything else to the slot's chain plugin. `send1:return` from the browser
+reached slot 0's chain under a key it does not serve and was dropped without a
+word — the same class Master FX had before its branch was added. Both routers
+now set the two levels through one helper, `send_bus_level_set`, and every other
+`send<N>:` key is kept off the slot chain on the web path.
+
+**And a level that landed was lost at the next boot.** Send returns are saved by
+shadow_ui (`send_levels.json`), and only when its own `sendLevelsDirty` is set — a
+write it did not make cannot set it. The WEB path raises
+`SHADOW_UI_FLAG_SEND_LEVELS_DIRTY` (0x4000, `ui_flags_ext`) for every level it
+lands, and shadow_ui's tick turns it into `sendLevelsDirty`. **Never the serve
+path**: its writer is shadow_ui itself, and its set restore writes only the
+fields a set's file holds. A save triggered from there writes EVERY level, so
+the fields the file deliberately leaves absent ("absent is not zero") would
+become stored values carried over from the previous set — and on a later load
+override the return the load had just opened. (Level, pan, mute and slot sends needed nothing: they persist
+exactly as a device-side edit of them does.)
+`tests/host/test_web_send_levels.c` drives both routers against the real
+`shadow_chain_mgmt.c`.
+
+**A tap must not move a fader.** A native range input jumps to wherever it is
+touched; on a live return the double-click reset first wrote 6 (-26 dB) and only
+then 127. The inputs take no pointer (`pointer-events: none`) and stay the
+control for the keyboard and assistive technology; the track around each one
+moves the value by how far the hand MOVES, and a double-tap resets (fader 0 dB,
+pan centre, send off) without passing through a jump.
+
+**Optimistic only where silence is not news.** While a hand is on a control the
+device's echo is ignored; when it leaves, level, mute and solo snap to what
+`/schwung-ui` says — polled 20x a second, it does report a refusal (an armed
+scene takes a level as a lock). Pan, sends and returns keep the written value:
+their confirmation is the notify ring, which drops entries when it overflows, so
+no echo is not a refusal. `tests/host/test_remote_ui_mixer.sh` pins the taper
+maths, the no-jump rule, and that the client draws exactly the keys the server
+allowlists.

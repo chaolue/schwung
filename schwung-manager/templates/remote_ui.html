@@ -10,6 +10,7 @@
 </div>
 
 <div class="remote-ui-tabs" role="tablist" aria-label="Shadow slots">
+    <button class="remote-ui-tab" role="tab" aria-selected="false" data-slot="mixer" onclick="switchSlot('mixer')">Mixer</button>
     <button class="remote-ui-tab active" role="tab" aria-selected="true" data-slot="0" onclick="switchSlot(0)">Slot 1</button>
     <button class="remote-ui-tab" role="tab" aria-selected="false" data-slot="1" onclick="switchSlot(1)">Slot 2</button>
     <button class="remote-ui-tab" role="tab" aria-selected="false" data-slot="2" onclick="switchSlot(2)">Slot 3</button>
@@ -39,5 +40,6 @@
 </div>
 
 <link rel="stylesheet" href="/static/remote-ui.css">
+<script src="/static/remote-ui-mixer.js"></script>
 <script src="/static/remote-ui.js"></script>
 {{end}}

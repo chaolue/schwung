@@ -1932,6 +1932,28 @@ installer). See memory `web-update-shim-bootstrap-gap`.
 
 The manager also serves a **file browser** (`/files`, under `/data/UserData/`) and per-slot module **Remote UIs** (auto-discovers `web_ui.html` per module, served in a sandboxed iframe). The file browser is keyboard- and screen-reader-accessible: rows are `tabindex=0` with spoken `aria-label`s, **Enter opens** (dir → in, file → download), **Space selects**, with a checkbox column for multi-select. Source: `schwung-manager/templates/files.html`, `remote_ui.go`.
 
+### The Remote UI Mixer — `docs/SHADOW_UI.md`
+
+`/remote-ui#mixer`: every slot's level, mute, solo, pan and Send A/B plus the two
+send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
+(`remote_ui_mixer.go`, `static/remote-ui-mixer.js`).
+
+- **One source per value, never two.** Level/mute/solo/name come from
+  `/schwung-ui` (polled at 20 Hz — the only place Move-driven changes show up;
+  they never reach the notify ring); pan/sends/returns from the notify ring plus
+  a one-read-a-second backstop. One goroutine sends every mixer message.
+- **The web set ring is a SECOND ROUTER** (`shadow_direct_set_param`) and dropped
+  `send<N>:return` into slot 0's chain. Both routers share `send_bus_level_set`;
+  the WEB path alone raises `SHADOW_UI_FLAG_SEND_LEVELS_DIRTY` (0x4000) —
+  shadow_ui saves returns only when it knows they moved, and raising it on the
+  serve too would make shadow_ui's own set restore save absent fields as values.
+- **`shadow_ui_state_t` is version 4**: `slot_volume_lin[]` (all 8 slots) appended after the aux block, because
+  whole percent reads -45 dB as silence. `test_manager_ui_state_offsets.sh`
+  pins the Go reader's offsets.
+- **A tap must not move a fader** — a native range jumps to the touch point (a
+  return dropped to -26 dB on a double-click). The inputs take no pointer; the
+  track drags relatively.
+
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's
 `platform.json`) — `exec` relative, because a payload never states where it is

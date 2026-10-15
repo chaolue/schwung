@@ -1114,6 +1114,8 @@ void shadow_ui_state_update_slot(int slot) {
      * what keeps that true for the next one. */
     *shadow_ui_state_muted(ui_state, slot) = shadow_chain_slots[slot].muted ? 1 : 0;
     *shadow_ui_state_soloed(ui_state, slot) = shadow_chain_slots[slot].soloed ? 1 : 0;
+    /* v4: the volume itself, not rounded to a percent. Every slot, one array. */
+    ui_state->slot_volume_lin[slot] = shadow_chain_slots[slot].volume;
 }
 
 void shadow_ui_state_refresh(void) {
@@ -4114,6 +4116,38 @@ static int shadow_lanes_plock_from_write(uint8_t slot, const char *key,
     return 1;
 }
 
+/* THE TWO SEND-BUS LEVELS -- `send<N>:return` and `send1:to_send2` -- SET in
+ * ONE place, for both writers: the shadow_param serve (shadow_ui, the external
+ * surfaces' Mixer) and shadow_direct_set_param (the web set ring, i.e. the
+ * Remote UI's Mixer).
+ *
+ * The web path had none of this. It routed master_fx: and slot keys and handed
+ * everything else to the slot's chain plugin, so `send1:return` from the
+ * browser reached slot 0's chain under a key the chain does not serve and was
+ * dropped without a word -- the silent class the master_fx branch below was
+ * added for. Two copies of this rule would drift the same way, so the serve
+ * calls this too.
+ *
+ * Returns 1 when `param` names one of the two levels: written, or (scene armed)
+ * taken as that scene's lock, exactly as the serve always did. RT-safe: plain
+ * stores, and both callers are on the callback. */
+static int send_bus_level_set(int send_idx, const char *param, const char *value)
+{
+    const int is_return = strcmp(param, "return") == 0;
+    if (!is_return && strcmp(param, "to_send2") != 0) return 0;
+    char t[16];
+    snprintf(t, sizeof(t), "send%d", send_idx + 1);
+    if (shadow_scene_host_edit_write(t, param, value)) return 1;   /* armed: a lock */
+    if (!is_return && send_idx != 0) return 0;                     /* only A feeds B */
+    shadow_scene_host_note_write(t, param, value);
+    int v = atoi(value);
+    if (v < 0) v = 0;
+    if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
+    if (is_return) shadow_send_return_level[send_idx] = v;
+    else shadow_send_a_to_b = v;
+    return 1;
+}
+
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
 
     /* Master FX params (web set-ring path). Web-originated sets arrive here via
@@ -4150,6 +4184,36 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
         /* Unrecognized master_fx:* keys (lfo*, specials): don't misroute to the
          * chain-slot plugin below — leave for the shadow_param path. */
         return;
+    }
+
+    /* Send-bus keys (web set-ring path), for the same reason as the block
+     * above. The two LEVELS are set exactly as the serve sets them; everything
+     * else on a send bus -- a position's parameter, a shape verb, a module
+     * load -- belongs to the shadow_param path, which owns the staging those
+     * need. None of it may reach the slot's chain below.
+     *
+     * A level that lands here is also flagged to shadow_ui, which saves these
+     * levels (send_levels.json) only when it knows they moved and cannot know
+     * about a write it did not make. ONLY here, never on the serve: shadow_ui's
+     * own set restore writes through the serve, and a save it triggered would
+     * write EVERY level -- turning the fields a set's file deliberately leaves
+     * absent (absent is not zero; see loadSendFxChainConfigForSet) into stored
+     * values carried over from the previous set. */
+    {
+        int send_idx = -1, send_fx = -1;
+        const char *send_param = NULL;
+        if (send_fx_route(key, SEND_BUSES, SEND_FX_SLOTS,
+                          &send_idx, &send_fx, &send_param)) {
+            if (send_fx < 0 && send_bus_level_set(send_idx, send_param, value)) {
+                shadow_control_t *ctrl = host.shadow_control_ptr ? *host.shadow_control_ptr : NULL;
+                if (ctrl) {
+                    ctrl->ui_flags_ext |= (uint16_t)(SHADOW_UI_FLAG_SEND_LEVELS_DIRTY >>
+                                                     SHADOW_UI_FLAG_EXT_SHIFT);
+                }
+                if (host.on_param_changed) host.on_param_changed(slot, key, value);
+            }
+            return;
+        }
     }
 
     /* Try slot-level params first */
@@ -5498,48 +5562,33 @@ void shadow_inprocess_handle_param_request(void) {
                     shadow_param_publish_response(req_id);
                     return;
                 }
-                if ((strcmp(send_param, "return") == 0 || strcmp(send_param, "to_send2") == 0) &&
-                    (is_set ? shadow_scene_host_edit_write(scene_t, send_param, shadow_param->value)
-                            : (scene_n = shadow_scene_host_read(scene_t, send_param, shadow_param->value,
-                                                                SHADOW_PARAM_VALUE_LEN)) >= 0)) {
-                    /* Armed: a lock, and its read answers the lock. */
+                if (is_set && send_bus_level_set(send_idx, send_param, shadow_param->value)) {
+                    /* A level, or (armed) its lock -- the one rule the web
+                     * set ring uses too. */
                     shadow_param->error = 0;
-                    shadow_param->result_len = is_set ? 0 : scene_n;
-                } else if (strcmp(send_param, "return") == 0) {
-                    if (is_set) {
-                        shadow_scene_host_note_write(scene_t, send_param, shadow_param->value);
-                        int v = atoi(shadow_param->value);
-                        if (v < 0) v = 0;
-                        if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
-                        shadow_send_return_level[send_idx] = v;
-                        shadow_param->error = 0;
-                        shadow_param->result_len = 0;
-                    } else {
-                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
-                                 shadow_send_return_level[send_idx]);
-                        shadow_param->error = 0;
-                        shadow_param->result_len = strlen(shadow_param->value);
-                    }
-                } else if (send_idx == 0 && strcmp(send_param, "to_send2") == 0) {
-                    if (is_set) shadow_scene_host_note_write(scene_t, send_param, shadow_param->value);
+                    shadow_param->result_len = 0;
+                } else if (!is_set &&
+                           (strcmp(send_param, "return") == 0 || strcmp(send_param, "to_send2") == 0) &&
+                           (scene_n = shadow_scene_host_read(scene_t, send_param, shadow_param->value,
+                                                             SHADOW_PARAM_VALUE_LEN)) >= 0) {
+                    /* Armed: its read answers the lock. */
+                    shadow_param->error = 0;
+                    shadow_param->result_len = scene_n;
+                } else if (!is_set && strcmp(send_param, "return") == 0) {
+                    snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                             shadow_send_return_level[send_idx]);
+                    shadow_param->error = 0;
+                    shadow_param->result_len = strlen(shadow_param->value);
+                } else if (!is_set && send_idx == 0 && strcmp(send_param, "to_send2") == 0) {
                     /* The A->B feed, named from its SOURCE end because that is
                      * where it is taken — post send A's chain, at A's return
                      * level. The _Static_assert beside the mix-path special
                      * case is what stops this key quietly meaning something
                      * else if SEND_BUSES is ever raised past two. */
-                    if (is_set) {
-                        int v = atoi(shadow_param->value);
-                        if (v < 0) v = 0;
-                        if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
-                        shadow_send_a_to_b = v;
-                        shadow_param->error = 0;
-                        shadow_param->result_len = 0;
-                    } else {
-                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
-                                 shadow_send_a_to_b);
-                        shadow_param->error = 0;
-                        shadow_param->result_len = strlen(shadow_param->value);
-                    }
+                    snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                             shadow_send_a_to_b);
+                    shadow_param->error = 0;
+                    shadow_param->result_len = strlen(shadow_param->value);
                 } else if (strcmp(send_param, "fx_count") == 0) {
                     /* A send publishes no dynamic length -- its chain is the
                      * full array with holes -- but the editor asks, so answer
