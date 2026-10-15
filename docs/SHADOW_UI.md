@@ -2258,3 +2258,44 @@ their confirmation is the notify ring, which drops entries when it overflows, so
 no echo is not a refusal. `tests/host/test_remote_ui_mixer.sh` pins the taper
 maths, the no-jump rule, and that the client draws exactly the keys the server
 allowlists.
+
+### A slot's NAME is its preset's name, and only shadow_ui can rename one
+
+Each Remote UI Slot tab shows the slot's name beside its title with a
+**Rename** button (**Save as preset** on a slot never saved). Renaming does
+exactly what Save under an edited name does on Move: `update_patch` on the
+slot's OWN preset with the new name as `custom_name`, so the file is rewritten
+in place and every set using that preset sees the new name; an unsaved slot is
+`save_patch`ed as a new preset. Refused, never guessed at: an empty slot, a
+preset being auditioned, and a name ANOTHER preset already has (Move asks
+before overwriting; a browser must not silently do what Move would ask about).
+
+**The shim's copy of the name only changed on a patch LOAD.** `patch_name` is
+what `/schwung-ui` publishes, and nothing on the save path touched it, so a
+preset resaved on Move under a new name kept its old name in the Mixer until
+the next boot — while Move's own slot list looked right, because it prefers the
+config file. shadow_ui now publishes the name it settled on (`slot:name`) after
+a save, a rename and a set switch.
+
+**A rename is RELAYED, because only shadow_ui can build the patch.** The
+browser sends `rename_slot`; the manager writes `slot:rename_request`
+`"<seq>:<name>"`; the shim holds it per slot and raises
+`SHADOW_UI_FLAG_SLOT_RENAME` (0x8000); shadow_ui reads every slot's request,
+does it, and answers `slot:rename_status` `"<seq>:ok"` or
+`"<seq>:err:<reason>"`, which clears ONLY the request it names (a newer one
+that arrived meanwhile stays pending) and reaches the browser on the notify
+ring. A read that did not answer is not "no request": the tick retries the pass.
+With no answer in 8 s the browser is told Move didn't respond. The manager's
+fallback write is the BLOCKING mailbox write, not the 10 ms fire-and-forget one
+knob drags use — a rename is one gesture, and a busy channel at that instant
+must wait for it, not fail.
+
+**`""` is a name.** An unsaved slot's `slot:name` is empty, and the subscribe
+path's `getParamWithRetry` treats empty as a failure — the slot that most
+needed a name showed "—" with Rename disabled. The name is read on its own,
+retried only on an error, and sent first so the header fills before the slower
+settings batch. Names drop `"`, `\` and control bytes (the preset files and the
+hand-rolled JSON readers cannot carry them) and are at most 63 bytes.
+`tests/host/test_slot_rename.c` (the shim, both routers),
+`test_slot_rename_ui.sh` (shadow_ui's functions, run under node) and
+`schwung-manager/remote_ui_rename_test.go` (end to end over a WebSocket).

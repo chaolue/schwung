@@ -126,6 +126,7 @@
     var statusEl = document.getElementById("remote-ui-status");
     var slotTitleEl = document.getElementById("slot-title");
     var slotHeaderControlsEl = document.getElementById("slot-header-controls");
+    var slotNameEl = document.getElementById("slot-name");
     var slotContentEl = document.getElementById("slot-content");
     var debugEl = document.getElementById("slot-debug");
     var tabButtons = document.querySelectorAll(".remote-ui-tab");
@@ -233,6 +234,9 @@
             case "mixer_state":
             case "mixer_update":
                 if (mixer) mixer.handle(msg);
+                return;
+            case "rename_result":
+                handleRenameResult(msg);
                 return;
             default:
                 break;
@@ -482,6 +486,7 @@
                 }
             }
         }
+        if (slot === activeSlot && "slot:name" in msg.params) renderSlotName();
         if (slot === activeSlot) {
             updateParamValues(slot, msg.params);
         }
@@ -1624,6 +1629,7 @@
         slotContentEl.innerHTML = "";
         debugEl.innerHTML = "";
         if (slotHeaderControlsEl) slotHeaderControlsEl.innerHTML = "";
+        renderSlotName();
 
         // Clear custom UI iframe state on re-render.
         // The DOM is about to be rebuilt, so every registered frame is stale.
@@ -1726,6 +1732,147 @@
         // Render slot settings (including LFO) at the bottom
         var settingsSection = renderSlotSettings(s);
         if (settingsSection) slotContentEl.appendChild(settingsSection);
+    }
+
+    // ------------------------------------------------------------------
+    // Slot name, and renaming the slot's preset
+    //
+    // A slot's name IS its preset's name, so Rename does what saving under an
+    // edited name does on Move: the preset file is rewritten in place (every
+    // set using it sees the new name), and an unsaved slot is saved as a new
+    // preset. The Move does it -- only it can assemble the slot's patch -- and
+    // answers with rename_result; the name itself comes back as slot:name.
+    // ------------------------------------------------------------------
+
+    // One rename UI at a time, for the slot it was opened on.
+    var rename = { slot: -1, editing: false, pending: false, error: "", draft: "" };
+    var RENAME_MAX = 63;
+
+    function slotNameOf(slot) {
+        var p = slots[slot] && slots[slot].components.synth.params;
+        var v = p ? p["slot:name"] : undefined;
+        return (v === undefined) ? null : String(v);   // null: not heard yet
+    }
+
+    // force: the rename state itself changed. Anything else that redraws the
+    // slot (a hierarchy arriving, a name echo) leaves an open form alone, so
+    // the text being typed keeps its focus and caret.
+    function renderSlotName(force) {
+        if (!slotNameEl) return;
+        var slot = activeSlot;
+        var editing = typeof slot === "number" && rename.editing && rename.slot === slot;
+        if (editing && !force) {
+            var open = slotNameEl.querySelector("form");
+            if (open && open.getAttribute("data-slot") === String(slot)) return;
+        }
+        slotNameEl.textContent = "";
+        if (typeof slot !== "number") return;
+        var name = slotNameOf(slot);
+
+        if (!editing) {
+            var label = document.createElement("span");
+            label.className = "slot-name-text" + (name ? "" : " text-muted");
+            label.textContent = name === null ? "—" : (name || "Unsaved");
+            if (!name && name !== null) label.title = "This slot hasn't been saved as a preset yet.";
+            slotNameEl.appendChild(label);
+
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "btn btn-secondary slot-name-btn";
+            btn.textContent = name ? "Rename" : "Save as preset";
+            btn.setAttribute("aria-label", (name ? "Rename slot " : "Name and save slot ") + (slot + 1));
+            btn.disabled = name === null || !isConnected;
+            btn.onclick = function () {
+                rename = { slot: slot, editing: true, pending: false, error: "", draft: name || "" };
+                renderSlotName(true);
+                var input = slotNameEl.querySelector("input");
+                if (input) { input.focus(); input.select(); }
+            };
+            slotNameEl.appendChild(btn);
+            return;
+        }
+
+        var form = document.createElement("form");
+        form.className = "slot-name-form";
+        form.setAttribute("data-slot", String(slot));
+        var inputId = "slot-name-input";
+        var lab = document.createElement("label");
+        lab.className = "sr-only";
+        lab.setAttribute("for", inputId);
+        lab.textContent = "Preset name for slot " + (slot + 1);
+        var input = document.createElement("input");
+        input.type = "text";
+        input.id = inputId;
+        input.className = "slot-name-input";
+        input.maxLength = RENAME_MAX;
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.value = rename.draft;
+        input.disabled = rename.pending;
+        input.oninput = function () { rename.draft = input.value; };
+
+        var save = document.createElement("button");
+        save.type = "submit";
+        save.className = "btn btn-primary slot-name-btn";
+        save.textContent = rename.pending ? "Saving…" : "Save";
+        save.disabled = rename.pending;
+        var cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "btn btn-secondary slot-name-btn";
+        cancel.textContent = "Cancel";
+        cancel.disabled = rename.pending;
+        cancel.onclick = function () { rename.editing = false; renderSlotName(true); };
+        input.onkeydown = function (e) {
+            if (e.key === "Escape" && !rename.pending) { e.preventDefault(); cancel.onclick(); }
+        };
+
+        var status = document.createElement("span");
+        status.className = "slot-name-status" + (rename.error ? " error" : "");
+        status.setAttribute("role", rename.error ? "alert" : "status");
+        status.textContent = rename.error || (rename.pending ? "Saving on Move…" : "");
+
+        form.onsubmit = function (e) {
+            e.preventDefault();
+            var v = input.value.trim();
+            var why = slotNameProblem(v);
+            if (why) { rename.error = why; renderSlotName(true); return; }
+            if (v === name) { rename.editing = false; renderSlotName(true); return; }
+            rename.pending = true;
+            rename.error = "";
+            rename.draft = v;
+            send({ type: "rename_slot", slot: slot, value: v });
+            renderSlotName(true);
+        };
+
+        form.appendChild(lab);
+        form.appendChild(input);
+        form.appendChild(save);
+        form.appendChild(cancel);
+        form.appendChild(status);
+        slotNameEl.appendChild(form);
+    }
+
+    // The same rules the manager and the Move apply, so the answer is immediate.
+    function slotNameProblem(v) {
+        if (!v) return "The name is empty.";
+        if (v.length > RENAME_MAX) return "The name is too long (" + RENAME_MAX + " characters at most).";
+        if (/["\\\u0000-\u001f\u007f]/.test(v)) return "The name can't contain quotes, backslashes or control characters.";
+        if (v === "Untitled") return "\"Untitled\" is the name of an unsaved slot.";
+        return "";
+    }
+
+    function handleRenameResult(msg) {
+        if (msg.slot !== rename.slot || !rename.pending) return;
+        rename.pending = false;
+        if (msg.ok) {
+            rename.editing = false;
+            rename.error = "";
+            // The name also arrives as slot:name; show it now rather than wait.
+            if (slots[msg.slot]) slots[msg.slot].components.synth.params["slot:name"] = msg.name;
+        } else {
+            rename.error = msg.error || "Move refused the rename.";
+        }
+        if (activeSlot === msg.slot) renderSlotName(true);
     }
 
     // ------------------------------------------------------------------

@@ -414,6 +414,7 @@ const SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED = 0x0800;
 const SHADOW_UI_FLAG_CC_LEARN_TOGGLE = 0x1000;
 const SHADOW_UI_FLAG_JUMP_TO_SCENES = 0x2000;   /* Shift+Vol+Step3 */
 const SHADOW_UI_FLAG_SEND_LEVELS_DIRTY = 0x4000; /* a send level moved off-UI */
+const SHADOW_UI_FLAG_SLOT_RENAME = 0x8000;      /* the Remote UI asked to rename a slot */
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -13147,6 +13148,88 @@ function snapshotServiceFlags(flags) {
     }
 }
 
+/* Tell the shim the name this slot settled on. Its copy is what /schwung-ui
+ * publishes (the Remote UI's Mixer and Slot tabs), and it only ever set that
+ * copy itself when a patch LOADED -- so a save under a new name, or a set
+ * switch, left the browser showing the old one until the next boot. */
+function publishSlotName(slotIndex) {
+    const name = (slots[slotIndex] && slots[slotIndex].name) || "";
+    setSlotParam(slotIndex, "slot:name", name === "Untitled" ? "" : name);
+}
+
+/*
+ * RENAMING A SLOT FROM THE REMOTE UI.
+ *
+ * A slot's name is its preset's name, so a rename is what Save under an edited
+ * name already is on Move: update_patch on the slot's own preset, with the new
+ * name as custom_name -- the file is rewritten in place, and every set that
+ * uses the preset sees the new name. A slot with no saved preset is saved as a
+ * new one under that name. Only this process can do it (buildSlotPatchJson),
+ * so the shim holds the browser's request and raises SHADOW_UI_FLAG_SLOT_RENAME.
+ *
+ * Refused rather than guessed at: an empty slot (nothing to save), a preset
+ * being auditioned (the live state is not the slot's), and a name another
+ * preset already has -- Move asks before overwriting one, and a browser rename
+ * must not silently do what Move would have asked about.
+ */
+let slotRenameRetries = 0;
+const SLOT_RENAME_MAX = 63;   /* SHADOW_UI_NAME_LEN - 1 */
+
+function slotRenameRefusal(slotIndex, name) {
+    if (!name) return "The name is empty.";
+    if (name.length > SLOT_RENAME_MAX) return "The name is too long (" + SLOT_RENAME_MAX + " characters at most).";
+    if (/["\\\u0000-\u001f\u007f]/.test(name)) return "The name can't contain quotes, backslashes or control characters.";
+    if (name === "Untitled") return "\"Untitled\" is the name of an unsaved slot.";
+    if (isPresetPreviewActive()) return "A preset is being auditioned on Move. Load it or press Back first.";
+    applySlotModuleSignature(slotIndex, getSlotModuleSignature(slotIndex));
+    if (!chainHasAnyModule(chainConfigs[slotIndex])) return "The slot is empty. Load a module into it first.";
+    return "";
+}
+
+/* One request: "" on success, otherwise why not. */
+function renameSlotPreset(slotIndex, name) {
+    const refusal = slotRenameRefusal(slotIndex, name);
+    if (refusal) return refusal;
+    const current = slots[slotIndex] ? slots[slotIndex].name : "";
+    const own = (current && current !== "Untitled") ? findPatchByName(current) : -1;
+    if (name !== current) {
+        const clash = findPatchByName(name);
+        if (clash >= 0 && clash !== own) return "A preset named \"" + name + "\" already exists.";
+    }
+    const json = buildSlotPatchJson(slotIndex, name);
+    if (!json) return "Could not read the slot's state. Try again.";
+    const ok = (own >= 0)
+        ? setSlotParam(slotIndex, "update_patch", own + ":" + json)
+        : setSlotParam(slotIndex, "save_patch", json);
+    if (!ok) return "Move did not accept the save. Try again.";
+    slots[slotIndex].name = name;
+    saveSlotsToConfig(slots);
+    publishSlotName(slotIndex);
+    loadPatchList();
+    needsRedraw = true;
+    debugLog("remote rename: slot " + (slotIndex + 1) + " \"" + current + "\" -> \"" + name + "\"" +
+             (own >= 0 ? " (preset " + own + " rewritten)" : " (new preset)"));
+    return "";
+}
+
+/* Do every pending request. False if a read failed, so the tick tries again
+ * (a timed-out read is not "no request" -- the tri-state rule). */
+function serviceSlotRenames() {
+    let complete = true;
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        const req = getSlotParam(i, "slot:rename_request");
+        if (req === null || req === undefined) { complete = false; continue; }
+        const m = /^(\d+):([\s\S]*)$/.exec(String(req));
+        if (!m) continue;
+        const err = renameSlotPreset(i, m[2].trim());
+        /* An answer that did not land leaves the request pending in the shim:
+         * retry the pass. Safe to repeat -- the slot now carries the name, so
+         * a second go rewrites its own preset under the same name. */
+        if (!setSlotParam(i, "slot:rename_status", m[1] + (err ? ":err:" + err : ":ok"))) complete = false;
+    }
+    return complete;
+}
+
 /* Actually save the preset */
 function doSavePreset(slotIndex, name) {
     const json = buildSlotPatchJson(slotIndex, name);
@@ -13164,6 +13247,7 @@ function doSavePreset(slotIndex, name) {
 
     slots[slotIndex].name = name;
     saveSlotsToConfig(slots);
+    publishSlotName(slotIndex);
 
     confirmingOverwrite = false;
     overwriteFromKeyboard = false;
@@ -28972,6 +29056,15 @@ globalThis.tick = function() {
             if (typeof shadow_clear_ui_flags === "function") shadow_clear_ui_flags(SHADOW_UI_FLAG_SEND_LEVELS_DIRTY);
             sendLevelsDirty = true;
         }
+        /* The Remote UI asked to rename a slot's preset -- see serviceSlotRenames. */
+        if ((flags & SHADOW_UI_FLAG_SLOT_RENAME) || slotRenameRetries > 0) {
+            if (flags & SHADOW_UI_FLAG_SLOT_RENAME) {
+                if (typeof shadow_clear_ui_flags === "function") shadow_clear_ui_flags(SHADOW_UI_FLAG_SLOT_RENAME);
+                slotRenameRetries = 3;
+            }
+            if (serviceSlotRenames()) slotRenameRetries = 0;
+            else slotRenameRetries--;
+        }
         if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
             debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
             autosaveAllSlots();
@@ -29350,6 +29443,7 @@ globalThis.tick = function() {
                     const m = raw.match(/"name"\s*:\s*"([^"]+)"/);
                     if (m && m[1]) slots[i].name = m[1];
                 }
+                publishSlotName(i);
             }
             saveSlotsToConfig(slots);
             needsRedraw = true;

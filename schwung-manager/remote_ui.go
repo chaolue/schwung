@@ -84,6 +84,10 @@ type RemoteUI struct {
 
 	// mix is the Mixer tab's state — see remote_ui_mixer.go.
 	mix mixerState
+
+	// renames tracks rename_slot requests awaiting shadow_ui's answer — see
+	// remote_ui_rename.go.
+	renames slotRenames
 }
 
 // ruClient represents a single WebSocket connection.
@@ -490,6 +494,8 @@ func (ru *RemoteUI) readLoop(ctx context.Context, c *ruClient) {
 			ru.handleUnsubscribeMixer(c)
 		case "set_mixer_param":
 			ru.handleSetMixerParam(ctx, c, msg)
+		case "rename_slot":
+			ru.handleRenameSlot(ctx, c, msg)
 		default:
 			ru.sendError(ctx, c, "unknown message type: "+msg.Type)
 		}
@@ -564,6 +570,20 @@ var slotSettingKeys = []string{
 }
 
 func (ru *RemoteUI) sendSlotSettings(ctx context.Context, c *ruClient, slot uint8) {
+	// The slot's preset name, FIRST and on its own: it heads the Slot tab, and
+	// "" is a real answer (an unsaved slot) that getParamWithRetry would retry
+	// and then drop as a failure -- leaving the header unknown and Rename
+	// disabled for exactly the slots that most need naming. Retried only on an
+	// ERROR; sent whenever a read completes.
+	for i := 0; i < 3; i++ {
+		if name, err := ru.shm.GetParam(slot, "slot:name"); err == nil {
+			ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot,
+				Params: map[string]string{"slot:name": name}})
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	params := make(map[string]string)
 
 	// Slot settings — use getParamWithRetry so a transient busy shm channel
@@ -1708,6 +1728,9 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 				// keys on the param name alone, so this costs a few string
 				// compares per change and nothing when nobody is looking.
 				ru.mixerNotify(ctx, c.Slot, c.Key, c.Value)
+				if ru.renameNotify(ctx, c.Key, c.Value) {
+					continue
+				}
 				if c.Slot == 0 && c.Key == overtakeParamPrefix+"rui_poll" {
 					// F4 push: the shim probes the overtake tool's rui_poll
 					// digest and pushes changes here. Don't forward raw —

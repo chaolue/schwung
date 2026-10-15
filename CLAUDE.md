@@ -1953,6 +1953,12 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
 - **A tap must not move a fader** — a native range jumps to the touch point (a
   return dropped to -26 dB on a double-click). The inputs take no pointer; the
   track drags relatively.
+- **Slot tabs RENAME the slot's preset** (in place, as Save with an edited name
+  does on Move). Only shadow_ui can build the patch, so it is RELAYED:
+  `slot:rename_request` held by the shim → `SHADOW_UI_FLAG_SLOT_RENAME` (0x8000)
+  → shadow_ui answers `slot:rename_status`. The shim's name only changed on a
+  patch LOAD, so a resave on Move left the browser stale; shadow_ui now
+  publishes `slot:name`. An unsaved slot's name is `""`, which is an ANSWER.
 
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's

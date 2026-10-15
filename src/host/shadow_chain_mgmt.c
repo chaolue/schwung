@@ -3381,6 +3381,47 @@ static int empty_send_index(int slot, const char *key) {
     return -1;
 }
 
+/* ---- Slot names, and renames asked for by the Remote UI -----------------
+ *
+ * A slot's NAME is its preset's name. The shim holds a copy (patch_name), which
+ * is what /schwung-ui publishes, but it only ever set that copy when a patch
+ * LOADED -- so a preset saved on Move under a new name kept its old name in the
+ * Remote UI until the next boot. shadow_ui now publishes the name it settled on
+ * (`slot:name`) after a save and a set switch.
+ *
+ * A RENAME is a different matter: it rewrites the preset file, which needs the
+ * slot's whole patch, which only shadow_ui can build. So the Remote UI's
+ * request (`slot:rename_request`, "<seq>:<name>") is held here, per slot, and
+ * SHADOW_UI_FLAG_SLOT_RENAME tells shadow_ui to come and get it. Its answer
+ * (`slot:rename_status`, "<seq>:ok" or "<seq>:err:<reason>") clears the request
+ * it names and reaches the browser on the notify ring like any other write. */
+#define SLOT_RENAME_REQ_LEN 96
+static char slot_rename_req[SHADOW_CHAIN_INSTANCES][SLOT_RENAME_REQ_LEN];
+
+/* Copy a name into patch_name, dropping what the preset files and the
+ * hand-rolled JSON readers cannot carry: control bytes, '"' and '\'. */
+static void slot_name_store(int slot, const char *value)
+{
+    char *dst = shadow_chain_slots[slot].patch_name;
+    const size_t cap = sizeof(shadow_chain_slots[slot].patch_name);
+    size_t n = 0;
+    for (const char *p = value ? value : ""; *p && n + 1 < cap; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c == 0x7f || c == '"' || c == '\\') continue;
+        dst[n++] = (char)c;
+    }
+    dst[n] = '\0';
+}
+
+/* The "<seq>" a request or status begins with, or -1. */
+static long slot_rename_seq(const char *v)
+{
+    if (!v || *v < '0' || *v > '9') return -1;
+    char *end = NULL;
+    long seq = strtol(v, &end, 10);
+    return (end && *end == ':') ? seq : -1;
+}
+
 int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
     {
         const int es = empty_send_index(slot, key);
@@ -3416,6 +3457,29 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
     }
     if (strcmp(key, "slot:muted") == 0) {
         shadow_apply_mute(slot, atoi(value));
+        return 1;
+    }
+    if (strcmp(key, "slot:name") == 0) {
+        slot_name_store(slot, value);
+        shadow_ui_state_update_slot(slot);
+        return 1;
+    }
+    if (strcmp(key, "slot:rename_request") == 0) {
+        if (slot_rename_seq(value) < 0) return 1;   /* malformed: dropped, never forwarded */
+        snprintf(slot_rename_req[slot], SLOT_RENAME_REQ_LEN, "%s", value);
+        shadow_control_t *ctrl = host.shadow_control_ptr ? *host.shadow_control_ptr : NULL;
+        if (ctrl) {
+            ctrl->ui_flags_ext |= (uint16_t)(SHADOW_UI_FLAG_SLOT_RENAME >>
+                                             SHADOW_UI_FLAG_EXT_SHIFT);
+        }
+        return 1;
+    }
+    if (strcmp(key, "slot:rename_status") == 0) {
+        /* Clears the request it answers, and only that one: a newer request
+         * that arrived while this one was being done stays pending. */
+        const long seq = slot_rename_seq(value);
+        if (seq >= 0 && slot_rename_seq(slot_rename_req[slot]) == seq)
+            slot_rename_req[slot][0] = '\0';
         return 1;
     }
     if (strcmp(key, "set_aligned") == 0) {
@@ -3491,6 +3555,10 @@ int shadow_handle_slot_param_set(int slot, const char *key, const char *value) {
 }
 
 int shadow_handle_slot_param_get(int slot, const char *key, char *buf, int buf_len) {
+    if (strcmp(key, "slot:name") == 0)
+        return snprintf(buf, buf_len, "%s", shadow_chain_slots[slot].patch_name);
+    if (strcmp(key, "slot:rename_request") == 0)
+        return snprintf(buf, buf_len, "%s", slot_rename_req[slot]);
     {
         const int es = empty_send_index(slot, key);
         if (es >= 0) return snprintf(buf, buf_len, "%d", shadow_chain_slots[slot].empty_send[es]);
