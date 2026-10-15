@@ -2299,3 +2299,30 @@ hand-rolled JSON readers cannot carry them) and are at most 63 bytes.
 `tests/host/test_slot_rename.c` (the shim, both routers),
 `test_slot_rename_ui.sh` (shadow_ui's functions, run under node) and
 `schwung-manager/remote_ui_rename_test.go` (end to end over a WebSocket).
+
+### The patch library is written BY NAME, and OFF the SPI callback
+
+**By index, a save landed on someone else's preset.** `update_patch` and
+`delete_patch` took an INDEX into the chain instance's own patch list. Each
+slot is its own instance over ONE shared `patches/` folder, and an instance
+rescans that list only when IT saves — so once another slot had added a preset,
+the index shadow_ui computed from a fresh folder listing named a different file
+in the stale list. Measured on a device: two Remote UI renames rewrote
+`ns.json` and `linein_freeverb.json` instead of the presets asked for. Move's
+own Save and Delete took the same path. `update_patch_by_name`
+(`"<current name>\n<json>"`) and `delete_patch_by_name` rescan, then act on the
+ONE preset with exactly that name (`v2_find_unique_patch`), and write nothing
+when there is none or more than one. The index forms remain for any other
+caller and now rescan first. shadow_ui confirms a rename against the folder,
+since a refusal writes nothing and says so only in the chain's log.
+`tests/host/test_patch_by_name.c` reproduces the stale list with two instances.
+
+**And every library write blocked the callback ~14 ms** (param-slow, for every
+Save and every rename): the write, then a rescan that opens and fully parses
+every preset in the folder — five SPI frames, a blip in the audio. They are a
+third slot-loader job kind, `SLOT_LOAD_KIND_IO` (`slot_load_key_is_patch_io`):
+run on the loader like a PARK, but the slot is neither parked nor faded. That
+is safe because the write touches only the instance's patch LIST, whose readers
+(`patch_count`, `patch_name_N`, `load_patch`) all arrive on the param channel,
+and the channel is held until the job is answered. shadow_ui waits up to 3 s for
+the answer (`writePatchLibrary`) rather than the default 100 ms.

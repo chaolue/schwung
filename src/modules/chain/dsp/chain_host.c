@@ -527,16 +527,52 @@ static void v2_set_param_impl(void *instance, const char *key, const char *val) 
         v2_scan_patches(inst);
         inst->dirty = 0;
     }
+    /*
+     * BY NAME, never by index. An index is a position in THIS instance's
+     * patch list, which is rescanned only when this instance itself saves --
+     * so after ANOTHER slot added a preset, the caller's index (from a fresh
+     * folder listing) named a different file here, and an update or a delete
+     * landed on somebody else's preset. Measured on a device: two renames
+     * rewrote ns.json and linein_freeverb.json instead of the presets asked
+     * for. The _by_name keys rescan, then act on the ONE preset with that exact
+     * name, and refuse -- writing nothing -- when there is none or more than
+     * one. The index forms remain for any other caller, rescanned first so an
+     * index at least means what a fresh listing says it means.
+     */
+    else if (strcmp(key, "update_patch_by_name") == 0) {
+        /* Format: "<current name>\n<json_data>" */
+        const char *nl = val ? strchr(val, '\n') : NULL;
+        char name[MAX_NAME_LEN];
+        size_t len = nl ? (size_t)(nl - val) : 0;
+        if (nl && len > 0 && len < sizeof(name)) {
+            memcpy(name, val, len);
+            name[len] = '\0';
+            v2_scan_patches(inst);
+            int index = v2_find_unique_patch(inst, name);
+            if (index >= 0 && v2_update_patch(inst, index, nl + 1) == 0) inst->dirty = 0;
+            v2_scan_patches(inst);
+        }
+    }
+    else if (strcmp(key, "delete_patch_by_name") == 0) {
+        if (val && val[0]) {
+            v2_scan_patches(inst);
+            int index = v2_find_unique_patch(inst, val);
+            if (index >= 0) v2_delete_patch(inst, index);
+            v2_scan_patches(inst);
+        }
+    }
     else if (strcmp(key, "delete_patch") == 0) {
         int index = atoi(val);
+        v2_scan_patches(inst);
         v2_delete_patch(inst, index);
         v2_scan_patches(inst);
     }
     else if (strcmp(key, "update_patch") == 0) {
-        /* Format: "index:json_data" */
+        /* Format: "index:json_data" -- prefer update_patch_by_name. */
         const char *colon = strchr(val, ':');
         if (colon) {
             int index = atoi(val);
+            v2_scan_patches(inst);
             v2_update_patch(inst, index, colon + 1);
             v2_scan_patches(inst);
             inst->dirty = 0;

@@ -1663,6 +1663,7 @@ CHAIN_INTERNAL int save_master_preset(const char *json_str);
 CHAIN_INTERNAL void scan_master_presets(void);
 CHAIN_INTERNAL int update_master_preset(int index, const char *json_str);
 CHAIN_INTERNAL int v2_delete_patch(chain_instance_t *inst, int index);
+CHAIN_INTERNAL int v2_find_unique_patch(chain_instance_t *inst, const char *name);
 CHAIN_INTERNAL int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch);
 CHAIN_INTERNAL int v2_load_patch(chain_instance_t *inst, int patch_idx);
 CHAIN_INTERNAL int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch);

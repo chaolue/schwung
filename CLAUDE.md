@@ -1959,6 +1959,11 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
   → shadow_ui answers `slot:rename_status`. The shim's name only changed on a
   patch LOAD, so a resave on Move left the browser stale; shadow_ui now
   publishes `slot:name`. An unsaved slot's name is `""`, which is an ANSWER.
+- **The patch library is written BY NAME** (`update_patch_by_name`,
+  `delete_patch_by_name`): an index named a different file in another slot's
+  STALE list, and two renames overwrote other presets on a device. Library
+  writes are a loader job (`SLOT_LOAD_KIND_IO`), never parked — they cost the
+  callback ~14 ms each, an audible blip on every Save.
 
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's

@@ -298,7 +298,7 @@ import {
 } from './shadow_ui_slots.mjs';
 import {
     PATCH_INDEX_NONE,
-    loadPatchList, findPatchIndexByName, findPatchByName,
+    loadPatchList, findPatchIndexByName, findPatchByName, patchNameAt,
     applyPatchSelection as _applyPatchSelection,
     drawPatches as _drawPatches,
     drawPatchDetail as _drawPatchDetail,
@@ -13175,6 +13175,26 @@ function publishSlotName(slotIndex) {
 let slotRenameRetries = 0;
 const SLOT_RENAME_MAX = 63;   /* SHADOW_UI_NAME_LEN - 1 */
 
+/*
+ * THE PATCH LIBRARY IS WRITTEN BY NAME, and its writes are WAITED FOR.
+ *
+ * By name: `update_patch` / `delete_patch` took an INDEX into the chain
+ * instance's own patch list, which that instance rescans only when it itself
+ * saves. Once another slot had added a preset, the index computed here (from
+ * a fresh folder listing) named a different file there, and the write landed
+ * on someone else's preset -- two renames on a device rewrote ns.json and
+ * linein_freeverb.json. The _by_name forms rescan and act on the one preset
+ * with that name, or write nothing.
+ *
+ * Waited for: the write runs on the shim's loader thread (it used to block
+ * the SPI callback ~14 ms, a blip in the audio), and the request is answered
+ * when the file is down -- which can be past the default 100 ms.
+ */
+const PATCH_LIBRARY_TIMEOUT_MS = 3000;
+function writePatchLibrary(slotIndex, key, value) {
+    return setSlotParamWithTimeout(slotIndex, key, value, PATCH_LIBRARY_TIMEOUT_MS);
+}
+
 function slotRenameRefusal(slotIndex, name) {
     if (!name) return "The name is empty.";
     if (name.length > SLOT_RENAME_MAX) return "The name is too long (" + SLOT_RENAME_MAX + " characters at most).";
@@ -13199,9 +13219,13 @@ function renameSlotPreset(slotIndex, name) {
     const json = buildSlotPatchJson(slotIndex, name);
     if (!json) return "Could not read the slot's state. Try again.";
     const ok = (own >= 0)
-        ? setSlotParam(slotIndex, "update_patch", own + ":" + json)
-        : setSlotParam(slotIndex, "save_patch", json);
+        ? writePatchLibrary(slotIndex, "update_patch_by_name", current + "\n" + json)
+        : writePatchLibrary(slotIndex, "save_patch", json);
     if (!ok) return "Move did not accept the save. Try again.";
+    /* Confirmed against the FOLDER, not the write's return: the chain refuses
+     * a missing or ambiguous name by writing nothing, and says so only in its
+     * log. */
+    if (findPatchByName(name) < 0) return "Move could not save the preset, so nothing was renamed.";
     slots[slotIndex].name = name;
     saveSlotsToConfig(slots);
     publishSlotName(slotIndex);
@@ -13239,10 +13263,17 @@ function doSavePreset(slotIndex, name) {
         return;
     }
 
+    let written;
     if (overwriteTargetIndex >= 0) {
-        setSlotParam(slotIndex, "update_patch", overwriteTargetIndex + ":" + json);
+        const target = patchNameAt(overwriteTargetIndex);
+        written = !!target && writePatchLibrary(slotIndex, "update_patch_by_name", target + "\n" + json);
     } else {
-        setSlotParam(slotIndex, "save_patch", json);
+        written = writePatchLibrary(slotIndex, "save_patch", json);
+    }
+    if (!written || findPatchByName(name) < 0) {
+        debugLog("doSavePreset: slot " + slotIndex + " \"" + name + "\" did not land");
+        showWarning("Save Failed", "The preset was not saved. Try again.");
+        return;
     }
 
     slots[slotIndex].name = name;
@@ -13267,7 +13298,7 @@ function doDeletePreset(slotIndex) {
     const patchIndex = findPatchByName(name);
 
     if (patchIndex >= 0) {
-        setSlotParam(slotIndex, "delete_patch", String(patchIndex));
+        writePatchLibrary(slotIndex, "delete_patch_by_name", name);
     }
 
     /* Clear the slot to "Untitled" state */

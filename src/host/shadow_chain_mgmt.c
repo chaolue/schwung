@@ -5385,7 +5385,8 @@ static void shadow_slot_load_run(void) {
     /* This thread may log; the callback may not. */
     unified_log("shim", LOG_LEVEL_INFO,
                 "slot-load: slot %d %s took %.1f ms off the SPI callback "
-                "(queued %.1f ms, slot parked)", slot, key, load_ms, queued_ms);
+                "(queued %.1f ms, %s)", slot, key, load_ms, queued_ms,
+                slot_load_job.kind == SLOT_LOAD_KIND_IO ? "slot playing" : "slot parked");
 }
 
 void shadow_slot_load_start(void) {
@@ -5434,7 +5435,9 @@ static int shadow_slot_load_post(int slot, uint32_t req_id,
         }
     }
 
-    slot_load_job.kind = staged ? SLOT_LOAD_KIND_STAGED : SLOT_LOAD_KIND_PARK;
+    const int io = slot_load_key_is_patch_io(key);
+    slot_load_job.kind = io ? SLOT_LOAD_KIND_IO
+                       : staged ? SLOT_LOAD_KIND_STAGED : SLOT_LOAD_KIND_PARK;
     slot_load_job.slot = slot;
     slot_load_job.req_id = req_id;
     slot_load_job.instance = inst;
@@ -5447,6 +5450,13 @@ static int shadow_slot_load_post(int slot, uint32_t req_id,
     slot_load_value[sizeof(slot_load_value) - 1] = '\0';
     clock_gettime(CLOCK_MONOTONIC, &slot_load_job.t_post);
 
+    if (io) {
+        /* A library write loads nothing: not parked, not faded -- the slot
+         * plays on while the loader writes the file and rescans. */
+        __atomic_store_n(&slot_load_job.state, SLOT_LOAD_WORKING, __ATOMIC_RELEASE);
+        shim_slot_loader_wake();
+        return 1;
+    }
     if (staged) {
         /* NOT parked: the slot plays on, old module and all, while it stages. */
         __atomic_store_n(&slot_load_job.state, SLOT_LOAD_WORKING, __ATOMIC_RELEASE);
@@ -5505,6 +5515,15 @@ static int shadow_slot_load_tick(shadow_param_t *shadow_param) {
         return 0;
     }
 
+    if (slot_load_job.kind == SLOT_LOAD_KIND_IO) {
+        /* Nothing was taken from the slot, so nothing goes back, and there
+         * is no activation to run: a library write loads no module. */
+        slot_load_job.instance = NULL;
+        __atomic_store_n(&slot_load_job.state, SLOT_LOAD_IDLE, __ATOMIC_RELEASE);
+        shadow_slot_load_answer(shadow_param);
+        return 0;
+    }
+
     /* PARK: reinstall, restore the fade we took, then the same activation the
      * synchronous path runs (which may itself set the target to 1). */
     shadow_chain_slots[slot].instance = slot_load_job.instance;
@@ -5548,6 +5567,11 @@ void shadow_inprocess_handle_param_request(void) {
      * everything else is served as usual. */
     if (req_type == 1 && shadow_slot_load_busy() &&
         slot_load_key_is_async(shadow_param->key))
+        return;
+    /* And a patch-library write waits for the loader too, rather than fall
+     * back to running on this callback. */
+    if (req_type == 1 && shadow_slot_load_busy() &&
+        slot_load_key_is_patch_io(shadow_param->key))
         return;
     uint32_t req_id = shadow_param->request_id;
 
@@ -6707,7 +6731,8 @@ void shadow_inprocess_handle_param_request(void) {
                  * (measured), silencing the whole device; the slot is parked
                  * and the write handed to the loader thread instead, and the
                  * request is answered when it lands. See slot_load_job.h. */
-                if (slot_load_key_is_async(key_copy) &&
+                if ((slot_load_key_is_async(key_copy) ||
+                     slot_load_key_is_patch_io(key_copy)) &&
                     shadow_slot_load_post(slot, req_id, key_copy, value_copy))
                     return;
                 shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
