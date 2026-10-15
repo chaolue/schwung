@@ -406,6 +406,7 @@ const SHADOW_UI_FLAG_SNAPSHOT_QUEUED = 0x0400;
 const SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED = 0x0800;
 const SHADOW_UI_FLAG_CC_LEARN_TOGGLE = 0x1000;
 const SHADOW_UI_FLAG_JUMP_TO_SCENES = 0x2000;   /* Shift+Vol+Step3 */
+const SHADOW_UI_FLAG_SEND_LEVELS_DIRTY = 0x4000; /* a send level moved off-UI */
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -28881,6 +28882,13 @@ globalThis.tick = function() {
             if (ccMap.learning) ccMap.cancelLearn(); else ccMap.beginLearn();
             showOverlay("CC Learn", ccMap.learning ? "on" : "off", 60);
             needsRedraw = true;
+        }
+        /* A send return / A->B level written by somebody else (the Remote UI's
+         * Mixer). We save those levels only when we know they moved, and a
+         * write we did not make could never tell us -- so the shim does. */
+        if (flags & SHADOW_UI_FLAG_SEND_LEVELS_DIRTY) {
+            if (typeof shadow_clear_ui_flags === "function") shadow_clear_ui_flags(SHADOW_UI_FLAG_SEND_LEVELS_DIRTY);
+            sendLevelsDirty = true;
         }
         if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
             debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");

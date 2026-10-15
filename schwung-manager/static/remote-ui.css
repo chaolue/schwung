@@ -944,3 +944,216 @@
     color: var(--text);
     font-size: 0.85rem;
 }
+
+/* ================================================================
+   Mixer tab (static/remote-ui-mixer.js)
+   Four slot strips and a returns strip. On a phone the four slot
+   faders stay side by side -- seeing every level at once is the
+   point of a mixer -- and the returns strip wraps below them.
+   ================================================================ */
+.mixer {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 1.3fr);
+    gap: var(--space-sm);
+    align-items: stretch;
+}
+
+.mixer-strip {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    min-width: 0;
+    padding: var(--space-sm);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.mixer-strip-head {
+    min-width: 0;
+    text-align: center;
+}
+
+.mixer-strip-title {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.mixer-strip-name {
+    overflow: hidden;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mixer-control {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+}
+
+.mixer-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+
+.mixer-value {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+/* The track takes the pointer and moves the value RELATIVELY (see slider()
+   in remote-ui-mixer.js); the input inside it only draws, and still takes the
+   keyboard and assistive technology. */
+.mixer-track {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    padding: 6px 0;
+    cursor: ns-resize;
+    /* A horizontal drag adjusts; a vertical one still scrolls the page. */
+    touch-action: pan-y;
+}
+
+.mixer-knob .mixer-track {
+    cursor: ew-resize;
+}
+
+.mixer-control input[type="range"] {
+    width: 100%;
+    min-height: 20px;
+    margin: 0;
+    accent-color: var(--accent);
+    pointer-events: none;
+}
+
+.mixer-control input[type="range"]:disabled {
+    opacity: 0.35;
+}
+
+.mixer-control input[type="range"]:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
+}
+
+.mixer-fader {
+    flex: 1;
+    justify-content: flex-end;
+}
+
+/* Vertical where the browser supports a vertical writing mode on a range
+   input; anything older keeps a working horizontal slider. */
+.mixer-fader input[type="range"] {
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 36px;
+    height: 200px;
+}
+
+/* The fader owns the gesture: a vertical drag must not scroll the page. */
+.mixer-fader .mixer-track {
+    flex: 1;
+    align-items: flex-end;
+    touch-action: none;
+}
+
+.mixer-buttons {
+    display: flex;
+    gap: var(--space-xs);
+}
+
+.mixer-toggle {
+    flex: 1;
+    min-height: var(--min-touch);
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text-muted);
+    font-family: var(--font-stack);
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.mixer-toggle:hover:not(:disabled) {
+    background: var(--bg-card-hover);
+}
+
+.mixer-toggle:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
+}
+
+.mixer-toggle:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.mixer-mute.active {
+    background: var(--color-warning);
+    border-color: var(--color-warning);
+    color: var(--bg);
+}
+
+.mixer-solo.active {
+    background: var(--accent-secondary);
+    border-color: var(--accent-secondary);
+    color: #fff;
+}
+
+.mixer-strip.muted .mixer-fader input[type="range"] {
+    opacity: 0.5;
+}
+
+.mixer-return-faders {
+    display: flex;
+    flex: 1;
+    justify-content: center;
+    gap: var(--space-sm);
+}
+
+.mixer-notice {
+    margin: 0 0 var(--space-sm);
+}
+
+.mixer-hint {
+    margin-top: var(--space-md);
+    font-size: 0.8rem;
+}
+
+@media (max-width: 560px) {
+    .mixer {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+    }
+
+    .mixer-returns {
+        grid-column: 1 / -1;
+    }
+
+    .mixer-strip {
+        padding: 6px 4px;
+    }
+
+    .mixer-value {
+        font-size: 0.65rem;
+    }
+
+    .mixer-label {
+        font-size: 0.62rem;
+    }
+
+    .mixer-returns .mixer-fader input[type="range"] {
+        height: 150px;
+    }
+}

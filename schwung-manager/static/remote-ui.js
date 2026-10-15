@@ -81,12 +81,21 @@
     // show "checking…" instead of a premature (and alarming) "No tool loaded".
     var tool = { id: "", customUI: null, params: {}, known: false };
 
-    // Read initial slot from URL hash (#slot1, #slot2, #slot3, #slot4, #master-fx, #tool)
+    // The Mixer tab (static/remote-ui-mixer.js): every slot's level, pan and
+    // sends plus the send returns on one page. Its own model; it only needs
+    // the socket.
+    var mixer = window.SchwungMixer ? window.SchwungMixer.create({ send: function (m) { send(m); } }) : null;
+
+    // Tabs that are not a chain slot index.
+    function isNamedTab(v) { return v === "master" || v === "tool" || v === "mixer"; }
+
+    // Read initial slot from URL hash (#slot1, #slot2, #slot3, #slot4, #master-fx, #tool, #mixer)
     var initialSlot = 0;
     (function() {
         var h = location.hash.replace("#", "");
         if (h === "master-fx") initialSlot = "master";
         else if (h === "tool") initialSlot = "tool";
+        else if (h === "mixer") initialSlot = "mixer";
         else if (/^slot[1-4]$/.test(h)) initialSlot = parseInt(h.charAt(4), 10) - 1;
     })();
     var activeSlot = initialSlot;
@@ -154,6 +163,7 @@
 
         ws.onclose = function () {
             isConnected = false;
+            if (mixer) mixer.reset();
             setStatus(false);
             scheduleReconnect();
         };
@@ -183,6 +193,8 @@
     function subscribe(slot) {
         if (slot === "master") {
             send({ type: "subscribe_master_fx" });
+        } else if (slot === "mixer") {
+            send({ type: "subscribe_mixer" });
         } else if (slot === "tool") {
             send({ type: "subscribe_tool" });
         } else {
@@ -193,6 +205,9 @@
     function unsubscribe(slot) {
         if (slot === "master") {
             send({ type: "unsubscribe_master_fx" });
+        } else if (slot === "mixer") {
+            send({ type: "unsubscribe_mixer" });
+            if (mixer) mixer.reset();
         } else if (slot === "tool") {
             send({ type: "unsubscribe_tool" });
         } else {
@@ -211,6 +226,10 @@
                 return;
             case "tool_info":
                 handleToolInfo(msg);
+                return;
+            case "mixer_state":
+            case "mixer_update":
+                if (mixer) mixer.handle(msg);
                 return;
             default:
                 break;
@@ -583,12 +602,12 @@
         activeSlot = n;
         waitingForData = true;
         // Persist tab in URL hash
-        var hash = (n === "master") ? "master-fx" : (n === "tool") ? "tool" : "slot" + (n + 1);
+        var hash = (n === "master") ? "master-fx" : isNamedTab(n) ? n : "slot" + (n + 1);
         history.replaceState(null, "", "#" + hash);
 
         tabButtons.forEach(function (btn) {
             var slotAttr = btn.getAttribute("data-slot");
-            var match = (slotAttr === "master" || slotAttr === "tool") ? (slotAttr === n) : (parseInt(slotAttr, 10) === n);
+            var match = isNamedTab(slotAttr) ? (slotAttr === n) : (parseInt(slotAttr, 10) === n);
             if (match) {
                 btn.classList.add("active");
                 btn.setAttribute("aria-selected", "true");
@@ -607,7 +626,7 @@
     // Set initial tab button active state from URL hash
     tabButtons.forEach(function (btn) {
         var slotAttr = btn.getAttribute("data-slot");
-        var match = (slotAttr === "master" || slotAttr === "tool") ? (slotAttr === activeSlot) : (parseInt(slotAttr, 10) === activeSlot);
+        var match = isNamedTab(slotAttr) ? (slotAttr === activeSlot) : (parseInt(slotAttr, 10) === activeSlot);
         if (match) {
             btn.classList.add("active");
             btn.setAttribute("aria-selected", "true");
@@ -1617,6 +1636,16 @@
 
         if (activeSlot === "tool") {
             renderTool();
+            return;
+        }
+
+        if (activeSlot === "mixer") {
+            slotTitleEl.textContent = "Mixer";
+            if (mixer) {
+                mixer.render(slotContentEl);
+            } else {
+                debugEl.innerHTML = '<p class="text-muted">The mixer script did not load. Reload the page.</p>';
+            }
             return;
         }
 

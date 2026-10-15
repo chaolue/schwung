@@ -236,6 +236,15 @@
 #define SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED 0x0800 /* armed recall cancelled */
 #define SHADOW_UI_FLAG_CC_LEARN_TOGGLE   0x1000 /* Shift+Vol+Sample: CC learn on/off */
 #define SHADOW_UI_FLAG_JUMP_TO_SCENES    0x2000 /* Shift+Vol+Step3: Scenes screen */
+/* A send-bus LEVEL (`send<N>:return`, `send1:to_send2`) was written by somebody
+ * other than shadow_ui -- the Remote UI's Mixer, through the web set ring. Those
+ * two levels are saved by shadow_ui (send_levels.json) and ONLY when its own
+ * sendLevelsDirty is set, which a write it did not make can never set; so a
+ * return turned in the browser played and was gone at the next boot. The shim
+ * raises this for a level landed on the WEB path only (shadow_direct_set_param;
+ * the reason it is not raised on the serve is written there), and the UI turns
+ * it into sendLevelsDirty. */
+#define SHADOW_UI_FLAG_SEND_LEVELS_DIRTY 0x4000
 
 /* Recall Quantize in MIDI clock pulses, from shadow_control_t.recall_quantize.
  * 0 = Off, 1 = beat, 2 = bar, 3 = two bars, at 24 PPQN. */
@@ -1104,12 +1113,18 @@ typedef struct shadow_ui_state_t {
      * shadow_ui_state_update_slot(), which publishes them. */
     uint8_t slot_muted[SHADOW_UI_SLOTS];         /* 0/1 */
     uint8_t slot_soloed[SHADOW_UI_SLOTS];        /* 0/1 */
+    /* --- version 3 --- The slot volume as the shim holds it (linear 0..4).
+     * slot_volumes above is whole PERCENT, which cannot say a quiet level at
+     * all: -45 dB is 0.0056, which is 0%, so the Remote UI's Mixer read a
+     * slot that was playing as silent. Appended rather than widened, for the
+     * reason given at version 2; consumers gate on `version >= 3`. */
+    float slot_volume_lin[SHADOW_UI_SLOTS];
 } shadow_ui_state_t;
 
 /* Bump when a field is APPENDED to shadow_ui_state_t; consumers gate on it.
  * Never reorder or resize an existing field — the two processes are deployed
  * as separate files and can be out of step across an upgrade. */
-#define SHADOW_UI_STATE_VERSION 2
+#define SHADOW_UI_STATE_VERSION 3
 
 /*
  * Parameter request structure for get/set operations.
