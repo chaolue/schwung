@@ -64,6 +64,7 @@ function world(o) {
   const code =
     liftLine(/const SLOT_RENAME_MAX = \d+;/) + "\n" +
     "let slotRenameRetries = 0;\n" +
+    liftLine(/const PATCH_LIBRARY_TIMEOUT_MS = \d+;/) + "\n" + lift("writePatchLibrary") + "\n" +
     lift("publishSlotName") + "\n" + lift("slotRenameRefusal") + "\n" +
     lift("renameSlotPreset") + "\n" + lift("serviceSlotRenames") + "\n" +
     "return { publishSlotName, slotRenameRefusal, renameSlotPreset, serviceSlotRenames };";
@@ -74,6 +75,20 @@ function world(o) {
     setSlotParam: (s, k, v) => {
       if (w.failStatus && k === "slot:rename_status") return false;
       w.writes.push([s, k, String(v)]); return true;
+    },
+    // The library writes, as the chain performs them: BY NAME, or nothing.
+    setSlotParamWithTimeout: (s, k, v, ms) => {
+      w.writes.push([s, k, String(v), ms]);
+      if (w.refuseLibrary) return true;            // answered, but wrote nothing
+      if (k === "update_patch_by_name") {
+        const nl = String(v).indexOf("\n");
+        const old = String(v).slice(0, nl), json = JSON.parse(String(v).slice(nl + 1));
+        const i = w.presets.indexOf(old);
+        if (i >= 0 && w.presets.lastIndexOf(old) === i) w.presets[i] = json.custom_name;
+      } else if (k === "save_patch") {
+        w.presets.push(JSON.parse(String(v)).custom_name);
+      }
+      return true;
     },
     getSlotParam: (s, k) => {
       if (k !== "slot:rename_request") return null;
@@ -96,16 +111,28 @@ function world(o) {
   return w;
 }
 
-// A saved slot is rewritten IN PLACE, at its own preset's index.
+// A saved slot is rewritten IN PLACE, addressed by its CURRENT NAME -- never
+// by an index, which named a different file in a slot whose list was stale.
 let w = world();
 check(w.fn.renameSlotPreset(0, "Warm Pad") === "", "renaming a saved slot succeeds");
-let up = w.writes.find((x) => x[1] === "update_patch");
-check(up && up[0] === 0 && up[2].startsWith("2:"), "update_patch on the slot's OWN preset (index 2): " + JSON.stringify(up));
-check(JSON.parse(up[2].slice(2)).custom_name === "Warm Pad", "carrying the new name as custom_name");
-check(!w.writes.some((x) => x[1] === "save_patch"), "and no new preset");
+let up = w.writes.find((x) => x[1] === "update_patch_by_name");
+check(up && up[0] === 0 && up[2].startsWith("Pad\n"), "update_patch_by_name on the slot's own preset, by name");
+check(JSON.parse(up[2].slice(up[2].indexOf("\n") + 1)).custom_name === "Warm Pad", "carrying the new name as custom_name");
+check(up[3] >= 1000, "and WAITED for (the write runs off the callback): " + up[3] + " ms");
+check(!w.writes.some((x) => x[1] === "save_patch" || x[1] === "update_patch" || x[1] === "delete_patch"),
+      "no index-addressed write, and no new preset");
+check(w.presets.indexOf("Warm Pad") >= 0 && w.presets.indexOf("Pad") < 0, "the preset itself was renamed");
 check(w.slots[0].name === "Warm Pad" && w.saved === 1, "the slot takes the name and the config is saved");
 check(w.writes.some((x) => x[0] === 0 && x[1] === "slot:name" && x[2] === "Warm Pad"),
       "the new name is PUBLISHED to the shim (the Remote UI reads it there)");
+
+// The chain refuses a missing or ambiguous name by writing NOTHING. The rename
+// must notice from the folder, and must not claim the name.
+w = world({ refuseLibrary: true });
+const nothing = w.fn.renameSlotPreset(0, "Warm Pad");
+check(/nothing was renamed/.test(nothing), "a write that changed nothing is reported: " + nothing);
+check(w.slots[0].name === "Pad" && !w.writes.some((x) => x[1] === "slot:name"),
+      "and the slot keeps its old name");
 
 // An unsaved slot is saved as a NEW preset under that name.
 w = world();

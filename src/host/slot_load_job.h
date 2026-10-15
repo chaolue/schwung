@@ -67,6 +67,29 @@
  */
 #define SLOT_LOAD_KIND_PARK   0
 #define SLOT_LOAD_KIND_STAGED 1
+/*
+ * IO (`save_patch`, `update_patch`, `delete_patch` and their `_by_name`
+ * forms) loads NOTHING: it writes the patch LIBRARY -- a file write, then a
+ * rescan that opens and fully parses every preset in the folder, ~14 ms
+ * measured on hardware (param-slow), five SPI frames: an audible blip on
+ * every Save, and on every Remote UI rename. So it runs on the loader too,
+ * but the slot is neither parked nor faded: the write touches only the
+ * instance's patch LIST, which nothing on the callback reads -- its readers
+ * (patch_count, patch_name_N, load_patch) all arrive on the param channel,
+ * and the channel is held until the job is answered.
+ */
+#define SLOT_LOAD_KIND_IO     2
+
+/* Does this slot-level key write the patch library? Whole keys only. */
+static inline int slot_load_key_is_patch_io(const char *key)
+{
+    if (!key) return 0;
+    return strcmp(key, "save_patch") == 0 ||
+           strcmp(key, "update_patch") == 0 ||
+           strcmp(key, "delete_patch") == 0 ||
+           strcmp(key, "update_patch_by_name") == 0 ||
+           strcmp(key, "delete_patch_by_name") == 0;
+}
 
 static inline int slot_load_key_is_synth_swap(const char *key)
 {

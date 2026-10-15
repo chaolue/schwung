@@ -121,6 +121,16 @@ export function findPatchIndexByName(name) {
     return match >= 0 ? match : 0;
 }
 
+/* The name of the preset findPatchByName() returned `index` for, or null.
+ * The library is written BY NAME (update_patch_by_name / delete_patch_by_name):
+ * an index is a position in a list, and the chain's copy of that list can be
+ * older than this one. */
+export function patchNameAt(index) {
+    const { patches } = ctx;
+    const p = (index >= 0 && patches) ? patches[index + 1] : null;
+    return p && p.file ? p.name : null;
+}
+
 export function findPatchByName(name) {
     loadPatchList();
     const { patches } = ctx;

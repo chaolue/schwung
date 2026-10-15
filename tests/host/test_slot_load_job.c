@@ -46,6 +46,18 @@ int main(void) {
     CHECK(!slot_load_key_is_async("load_file_x"), "load_file is matched whole");
     CHECK(!slot_load_key_is_async("clear_clip"), "clear is matched whole");
 
+    /* The patch LIBRARY writes: off the callback (a rescan parses every
+     * preset, ~14 ms measured), but never parked -- they load nothing. */
+    CHECK(slot_load_key_is_patch_io("save_patch"), "save_patch writes the library");
+    CHECK(slot_load_key_is_patch_io("update_patch"), "update_patch writes the library");
+    CHECK(slot_load_key_is_patch_io("delete_patch"), "delete_patch writes the library");
+    CHECK(slot_load_key_is_patch_io("update_patch_by_name"), "update_patch_by_name writes the library");
+    CHECK(slot_load_key_is_patch_io("delete_patch_by_name"), "delete_patch_by_name writes the library");
+    CHECK(!slot_load_key_is_async("save_patch"), "a library write is not a LOAD (it must not park the slot)");
+    CHECK(!slot_load_key_is_patch_io("load_patch"), "load_patch is a load, not a library write");
+    CHECK(!slot_load_key_is_patch_io("save_patch_x"), "save_patch is matched whole");
+    CHECK(!slot_load_key_is_patch_io("synth:save_patch"), "a component key is never a library write");
+
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("test_slot_load_job: all passed\n");
     return 0;

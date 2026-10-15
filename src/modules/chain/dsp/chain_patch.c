@@ -310,6 +310,25 @@ int v2_update_patch(chain_instance_t *inst, int index, const char *json_data) {
     return 0;
 }
 
+/* The index of the ONE scanned patch whose name is exactly `name`, or -1 when
+ * there is none or more than one -- an ambiguous name must never pick a file.
+ * The caller rescans first; see update_patch_by_name in chain_host.c. */
+int v2_find_unique_patch(chain_instance_t *inst, const char *name) {
+    char msg[256];
+    int found = -1, count = 0;
+    for (int i = 0; inst && name && i < inst->patch_count; i++) {
+        if (strcmp(inst->patches[i].name, name) == 0) {
+            found = i;
+            count++;
+        }
+    }
+    if (count == 1) return found;
+    snprintf(msg, sizeof(msg), "[v2] No unique patch named \"%.64s\" (%d match%s) -- nothing written",
+             name ? name : "", count, count == 1 ? "" : "es");
+    v2_chain_log(inst, msg);
+    return -1;
+}
+
 /* V2 delete patch - uses instance data instead of globals */
 int v2_delete_patch(chain_instance_t *inst, int index) {
     char msg[256];
