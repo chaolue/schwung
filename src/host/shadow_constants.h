@@ -271,6 +271,12 @@ static inline int shadow_slot_is_move_track(int slot) {
  * the reason it is not raised on the serve is written there), and the UI turns
  * it into sendLevelsDirty. */
 #define SHADOW_UI_FLAG_SEND_LEVELS_DIRTY 0x4000
+/* The Remote UI asked to rename a slot's preset (`slot:rename_request`, held
+ * by the shim per slot). Only shadow_ui can do it -- a rename rewrites the
+ * preset file, and only shadow_ui can assemble the slot's whole patch -- so
+ * the shim holds the request and raises this; shadow_ui reads each slot's
+ * request, performs it, and answers with `slot:rename_status`. */
+#define SHADOW_UI_FLAG_SLOT_RENAME       0x8000
 
 /* Recall Quantize in MIDI clock pulses, from shadow_control_t.recall_quantize.
  * 0 = Off, 1 = beat, 2 = bar, 3 = two bars, at 24 PPQN. */

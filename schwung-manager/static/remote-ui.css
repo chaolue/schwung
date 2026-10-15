@@ -176,6 +176,71 @@
     display: none;
 }
 
+/* The slot's preset name, and the inline Rename form (Slot tabs only). */
+.slot-name {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    min-width: 0;
+}
+
+.slot-name:empty {
+    display: none;
+}
+
+.slot-name-text {
+    overflow: hidden;
+    max-width: 24ch;
+    font-size: 1rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.slot-name-form {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+}
+
+/* Qualified by the form: style.css sizes every text input to the full width
+   of its container, which put Save and Cancel on a line of their own. */
+.slot-name-form .slot-name-input {
+    flex: 0 1 22ch;
+    width: 22ch;
+    min-width: 10ch;
+    max-width: 100%;
+    min-height: 36px;
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-stack);
+    font-size: 0.95rem;
+}
+
+.slot-name-input:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
+}
+
+.slot-name-btn {
+    min-height: 36px;
+    padding: var(--space-xs) var(--space-md);
+    font-size: 0.85rem;
+}
+
+.slot-name-status {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.slot-name-status.error {
+    color: var(--color-error);
+}
+
 /* ---- Breadcrumb ---- */
 .slot-breadcrumb {
     font-size: 0.85rem;
