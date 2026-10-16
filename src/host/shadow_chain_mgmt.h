@@ -298,6 +298,25 @@ extern volatile int shadow_send_a_to_b;                    /* 0..127 */
  * above: those are what the user set, and what every save reads. */
 extern volatile int shadow_scene_return_ov[SEND_BUSES];
 extern volatile int shadow_scene_a_to_b_ov;
+/* A return's MUTE: silences what the return adds to the mix without moving its
+ * level, so it comes back exactly where it was. Applied as a glide in the shim
+ * after the send's chain, so the send stem and the A->B feed follow it the way
+ * they follow the return level. "send<N>:return_muted", saved with the levels. */
+extern volatile int shadow_send_return_muted[SEND_BUSES];  /* 0 / 1 */
+
+/* The MASTER BUS's own controls -- a software level before Move's volume
+ * knob, which stays the final output level. Applied right after Master FX and
+ * before every capture view, so what is recorded is what is heard:
+ *   master_fx:level           0..MASTER_BUS_LEVEL_MAX, linear gain (1 = unity)
+ *   master_fx:muted           silences the bus
+ *   master_fx:chain_bypassed  every Master FX position bypassed at once
+ * Without Move->Schwung the bus is Schwung's own audio (slots and send returns);
+ * with it, it is the whole rebuilt mix. Saved with the send levels. */
+#define MASTER_BUS_LEVEL_MAX 2.0f   /* +6 dB, the ceiling slot Volume has */
+extern volatile float shadow_master_bus_level;
+extern volatile int shadow_master_bus_muted;
+extern volatile int shadow_master_fx_chain_bypassed;
+
 static inline int shadow_send_return_eff(int sb) {
     const int o = shadow_scene_return_ov[sb];
     return o >= 0 ? o : shadow_send_return_level[sb];

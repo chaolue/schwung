@@ -77,11 +77,11 @@ function run(busLevelKeys) {
 {
   const e = run(["return", "to_send2"]);
   const keys = e.params.map((p) => p.key);
-  if (JSON.stringify(keys) !== JSON.stringify(["send1:return", "send1:to_send2"])) {
+  if (JSON.stringify(keys) !== JSON.stringify(["send1:return", "send1:to_send2", "send1:return_muted"])) {
     fail("declared keys are " + JSON.stringify(keys) + " -- they must be the REAL "
          + "bus keys, or a knob writes a param nobody serves");
   }
-  for (const p of e.params) {
+  for (const p of e.params.filter((q) => q.key !== "send1:return_muted")) {
     if (p.type !== "int" || p.min !== 0 || p.max !== MAX) {
       fail(p.key + " is not an int over 0.." + MAX);
     }
@@ -151,10 +151,16 @@ function run(busLevelKeys) {
 {
   const e = run(["return"]);
   const h = JSON.parse(e.io.getParam("send_settings:ui_hierarchy"));
-  if (h.levels.root.knobs.length !== 1) {
-    fail("a one-level send declares " + h.levels.root.knobs.length + " knobs");
+  /* Its return, and the Mute for it. */
+  if (h.levels.root.knobs.length !== 2 || h.levels.root.knobs[1] !== "send1:return_muted") {
+    fail("a one-level send declares " + JSON.stringify(h.levels.root.knobs));
   }
-  ok("a send with one level is still a grid page (the master bus has one too)");
+  const cp = JSON.parse(e.io.getParam("send_settings:chain_params"));
+  const mute = cp.find((p) => p.key === "send1:return_muted");
+  if (!mute || mute.type !== "enum" || mute.options.join() !== "Off,On") {
+    fail("the return Mute must be an Off/On switch: " + JSON.stringify(mute));
+  }
+  ok("a send with one level is still a grid page, with a Mute for it");
 }
 
 /* ---- no levels at all: NO CONTRACT, not an empty one ----------------- */

@@ -30,7 +30,8 @@ import (
 //       report at different moments (and, against a v2 shim, at different
 //       precision) move the fader back and forth on every turn.
 //
-//   slot:pan, buses:main_send1/2, send1:return, send2:return, send1:to_send2
+//   slot:pan, buses:main_send1/2, send1:return, send2:return, send1:to_send2,
+//   the returns' mutes, master_fx:level / muted / chain_bypassed
 //       Not in any segment, so: the notify ring for every write made through
 //       the param channel or the web set ring; one full read when a browser
 //       subscribes and after a set switch (set_aligned) or a slot's patch
@@ -61,6 +62,7 @@ const (
 
 	mixerSendLevelMax = 127 // BUS_MIX_SEND_LEVEL_MAX
 	mixerVolumeMax    = 4.0 // slot:volume clamp in shadow_handle_slot_param_set
+	mixerMasterMax    = 2.0 // MASTER_BUS_LEVEL_MAX: master_fx:level, +6 dB
 )
 
 // Per-slot keys served from /schwung-ui.
@@ -69,8 +71,12 @@ var mixerSlotUIKeys = []string{"slot:volume", "slot:muted", "slot:soloed"}
 // Per-slot keys that have to be READ over the param channel.
 var mixerSlotParamKeys = []string{"slot:pan", "buses:main_send1", "buses:main_send2"}
 
-// Device-wide keys (slot index ignored by the shim; sent as 0).
-var mixerGlobalKeys = []string{"send1:return", "send2:return", "send1:to_send2"}
+// Device-wide keys (slot index ignored by the shim; sent as 0): the returns
+// and their mutes, A->B, and the master bus's own level, mute and Master FX
+// bypass (master_bus_set in shadow_chain_mgmt.c).
+var mixerGlobalKeys = []string{"send1:return", "send2:return", "send1:to_send2",
+	"send1:return_muted", "send2:return_muted",
+	"master_fx:level", "master_fx:muted", "master_fx:chain_bypassed"}
 
 // mixerKeyRef names one readable mixer value. slot is -1 for a global key.
 type mixerKeyRef struct {
@@ -136,8 +142,12 @@ func mixerWriteScope(key string) (perSlot bool, ok bool) {
 // than an atoi() that quietly becomes 0.
 func validMixerValue(key, value string) bool {
 	switch key {
-	case "slot:muted", "slot:soloed":
+	case "slot:muted", "slot:soloed", "send1:return_muted", "send2:return_muted",
+		"master_fx:muted", "master_fx:chain_bypassed":
 		return value == "0" || value == "1"
+	case "master_fx:level":
+		f, err := strconv.ParseFloat(value, 64)
+		return err == nil && !math.IsNaN(f) && f >= 0 && f <= mixerMasterMax
 	case "slot:volume":
 		f, err := strconv.ParseFloat(value, 64)
 		return err == nil && !math.IsNaN(f) && f >= 0 && f <= mixerVolumeMax
@@ -179,8 +189,14 @@ func normalizeMixerValue(key, value string) (string, bool) {
 			return "", false
 		}
 		return value, true
-	case "slot:muted", "slot:soloed":
+	case "slot:muted", "slot:soloed", "send1:return_muted", "send2:return_muted",
+		"master_fx:muted", "master_fx:chain_bypassed":
 		return boolDigit(f != 0), true
+	case "master_fx:level":
+		if f < 0 || f > mixerMasterMax {
+			return "", false
+		}
+		return value, true
 	case "buses:main_send1", "buses:main_send2",
 		"send1:return", "send2:return", "send1:to_send2":
 		n := int(f) // atoi truncates

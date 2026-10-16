@@ -132,6 +132,7 @@ const grabSet = (name) => {
     return m[0];
 };
 const FX_BUSES_SRC = src.match(/^const FX_BUSES = \[[^]*?^\];/m)[0];
+const BUS_MIXER_FIELDS_SRC = src.match(/^const BUS_MIXER_FIELDS = \[[^]*?^\];/m)[0];
 
 /* ---- the FX-bus record helpers, against a real record map ------------- */
 const H = new Function([
@@ -370,7 +371,7 @@ console.log("  ok  saveSendFxChainConfig: user_preset after state (a preset name
         "/set/send_fx_1_2.json": "{}\n",
     };
     const deps = [
-        "const MASTER_FX_SLOTS = 8;", FX_BUSES_SRC,
+        "const MASTER_FX_SLOTS = 8;", FX_BUSES_SRC, BUS_MIXER_FIELDS_SRC,
         "const activeSlotStateDir = \"/set\";",
         "function host_file_exists(p) { return p in files; }",
         "function host_read_file(p) { return (p in files) ? files[p] : null; }",
