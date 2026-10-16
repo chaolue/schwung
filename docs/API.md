@@ -255,6 +255,14 @@ host_track_event(name, props) // Send analytics event (if enabled)
 // `slot` is a chain slot 0-7: 0-3 are Move's tracks, 4-7 the aux slots (no
 // Move track). shadow_get_selected_slot() is Move's selected TRACK, so 0-3.
 shadow_get_param(slot, key) / shadow_set_param(slot, key, val)
+shadow_param_changes(since)   // -> {seq, lost, changes: [{slot, key, value, origin, truncated}]}
+                              //   or null (no feed: an older shim). Every param SET completed
+                              //   since sequence `since`, from ANY client -- the Remote UI
+                              //   ("web"), the shadow UI, modules, tools ("channel"), the
+                              //   caller's own included. A copy from shared memory, no round
+                              //   trip: cheap enough every tick. No `since` (or < 0) answers the
+                              //   current position. Pass `seq` back; on `lost`, re-read what
+                              //   you follow. See docs/MODULES.md, src/host/param_feed.h
 shadow_set_param_timeout(ms)
 shadow_get_slots() / shadow_set_focused_slot(slot)
 shadow_get_selected_slot() / shadow_get_ui_slot()

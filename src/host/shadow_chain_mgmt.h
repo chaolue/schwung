@@ -173,6 +173,12 @@ typedef struct {
      * browser updates. May be NULL if web ring is not available. */
     void (*on_param_changed)(uint8_t slot, const char *key, const char *value);
 
+    /* The param change feed (param_feed.h): called beside on_param_changed for
+     * every completed set -- INCLUDING the web UI's own, which on_param_changed
+     * leaves out because the browser already knows -- so a module can follow a
+     * parameter changed elsewhere. origin is PARAM_ORIGIN_*. May be NULL. */
+    void (*on_param_feed)(uint8_t slot, const char *key, const char *value, uint8_t origin);
+
     /* Queue a 4-byte USB-MIDI packet for the external port (cable 2).
      * Audio-thread safe: enqueues into the shim's lock-free ROUTE_EXTERNAL
      * ring, drained into the mailbox once per block. May be NULL on hosts

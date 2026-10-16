@@ -32,7 +32,8 @@
 
 #include "host/js_display.h"
 #include "host/shadow_constants.h"
-#include "host/ui_midi_out_ring.h"   /* SPSC discipline for /schwung-midi-out */
+#include "host/ui_midi_out_ring.h"
+#include "host/param_feed.h"         /* the param change feed: shadow_param_changes() */   /* SPSC discipline for /schwung-midi-out */
 #include "host/ui_midi_ring.h"       /* arrival order for /schwung-ui-midi */
 #include "host/shadow_shm_util.h"
 #include "host/e16_mirror_shm.h"
@@ -52,6 +53,9 @@ static uint8_t *shadow_display_shm = NULL;
 static shadow_control_t *shadow_control = NULL;
 static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
+/* The param change feed -- absent against a shim too old to create it, and
+ * shadow_param_changes() then answers null. */
+static param_feed_t *param_feed = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
 static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
 static shadow_midi_inject_t *shadow_midi_inject = NULL;
@@ -124,6 +128,8 @@ static int open_shadow_shm(void) {
     shadow_ui_state = (shadow_ui_state_t *)shadow_shm_map(SHM_SHADOW_UI, SHADOW_UI_BUFFER_SIZE, 0, 0);
 
     shadow_param = (shadow_param_t *)shadow_shm_map(SHM_SHADOW_PARAM, SHADOW_PARAM_BUFFER_SIZE, 0, 0);
+
+    param_feed = (param_feed_t *)shadow_shm_map(SHM_PARAM_FEED, sizeof(param_feed_t), 0, 0);
 
     shadow_midi_out = (shadow_midi_out_t *)shadow_shm_map(SHM_SHADOW_MIDI_OUT, sizeof(shadow_midi_out_t), 0, 0);
 
@@ -1653,6 +1659,53 @@ static JSValue shadow_param_bulk_js(JSContext *ctx, int argc, JSValueConst *argv
     JSValue bout = JS_NewStringLen(ctx, shadow_param->value, (size_t)rlen);
     shadow_param_consume();
     return bout;
+}
+
+/* shadow_param_changes(since) -> {seq, lost, changes: [{slot, key, value,
+ * origin, truncated}]} or null when there is no feed (an older shim).
+ *
+ * The parameter sets completed since sequence `since`, from any client -- the
+ * Remote UI's (origin "web"), the shadow UI's, any module's or tool's
+ * ("channel"), this caller's own included. A copy out of shared memory, no
+ * round trip: cheap enough to call every tick. Pass `seq` back next time.
+ * With no `since` (or a negative one) it answers the current position and no
+ * changes -- where a new reader starts. `lost` means changes were missed (the
+ * reader fell more than PARAM_FEED_ENTRIES behind); re-read what you follow.
+ * See src/host/param_feed.h. */
+#define PARAM_CHANGES_MAX 64
+static JSValue js_shadow_param_changes(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!param_feed) return JS_NULL;
+    JSValue out = JS_NewObject(ctx);
+    JSValue arr = JS_NewArray(ctx);
+    double since_d = -1;
+    if (argc >= 1 && !JS_IsUndefined(argv[0]) && !JS_IsNull(argv[0]))
+        JS_ToFloat64(ctx, &since_d, argv[0]);
+    if (since_d < 0) {
+        JS_SetPropertyStr(ctx, out, "seq", JS_NewUint32(ctx, param_feed_head(param_feed)));
+        JS_SetPropertyStr(ctx, out, "lost", JS_FALSE);
+        JS_SetPropertyStr(ctx, out, "changes", arr);
+        return out;
+    }
+    static param_feed_change_t buf[PARAM_CHANGES_MAX];
+    uint32_t pos = 0;
+    int lost = 0;
+    int n = param_feed_read(param_feed, (uint32_t)since_d, buf, PARAM_CHANGES_MAX, &pos, &lost);
+    for (int i = 0; i < n; i++) {
+        JSValue c = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, c, "slot", JS_NewInt32(ctx, buf[i].slot));
+        JS_SetPropertyStr(ctx, c, "key", JS_NewString(ctx, buf[i].key));
+        JS_SetPropertyStr(ctx, c, "value", JS_NewString(ctx, buf[i].value));
+        JS_SetPropertyStr(ctx, c, "origin", JS_NewString(ctx,
+            buf[i].origin == PARAM_ORIGIN_WEB ? "web" : "channel"));
+        JS_SetPropertyStr(ctx, c, "truncated", JS_NewBool(ctx, buf[i].truncated));
+        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, c);
+    }
+    JS_SetPropertyStr(ctx, out, "seq", JS_NewUint32(ctx, pos));
+    JS_SetPropertyStr(ctx, out, "lost", JS_NewBool(ctx, lost));
+    JS_SetPropertyStr(ctx, out, "changes", arr);
+    return out;
 }
 
 static JSValue js_shadow_get_params(JSContext *ctx, JSValueConst this_val,
@@ -3904,6 +3957,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_param", JS_NewCFunction(ctx, js_shadow_get_param, "shadow_get_param", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_params", JS_NewCFunction(ctx, js_shadow_get_params, "shadow_get_params", 3));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_params", JS_NewCFunction(ctx, js_shadow_set_params, "shadow_set_params", 3));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_param_changes", JS_NewCFunction(ctx, js_shadow_param_changes, "shadow_param_changes", 1));
 
     /* OTLP tracing (Phase 2) */
     JS_SetPropertyStr(ctx, global_obj, "host_trace_begin", JS_NewCFunction(ctx, js_host_trace_begin, "host_trace_begin", 1));
