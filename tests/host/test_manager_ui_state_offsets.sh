@@ -27,6 +27,11 @@ uiOffAuxNames aux_names
 uiOffAuxMuted aux_muted
 uiOffAuxSoloed aux_soloed
 uiOffSlotVolumeLin slot_volume_lin
+uiOffMeterSlot meter_slot
+uiOffMeterReturn meter_return
+uiOffMeterMaster meter_master
+uiOffMoveVolume move_volume
+uiOffSceneEdit scene_edit
 '
 
 {
@@ -39,11 +44,12 @@ uiOffSlotVolumeLin slot_volume_lin
   echo "$MAP" | while read -r g f; do
     if [ -z "$g" ]; then continue; fi
     # Scalars and the 2-D name table have no single element width to check.
-    case "$f" in version|slot_count|slot_names|aux_names) echo "  S(\"$g\", $f);";; *) echo "  O(\"$g\", $f);";; esac
+    case "$f" in version|slot_count|slot_names|aux_names|meter_slot|meter_return|move_volume|scene_edit) echo "  S(\"$g\", $f);";; *) echo "  O(\"$g\", $f);";; esac
   done
   echo '  printf("uiStateSlots %d 0\n", SHADOW_UI_SLOTS);'
   echo '  printf("uiStateNameLen %d 0\n", SHADOW_UI_NAME_LEN);'
   echo '  printf("uiStateBaseSlots %d 0\n", SHADOW_UI_STATE_BASE_SLOTS);'
+  echo '  printf("uiStateReturns %d 0\n", SHADOW_UI_SEND_RETURNS);'
   echo '  return 0; }'
 } > "$T/o.c"
 ${CC:-cc} -Isrc/host -Isrc -o "$T/o" "$T/o.c"
@@ -75,7 +81,7 @@ done < "$T/want"
 # not know about is fine; a gate on a version the shim never publishes means
 # that field is never read, and the Mixer falls back to whole percent forever.
 cv=$(grep -E '^#define SHADOW_UI_STATE_VERSION' src/host/shadow_constants.h | awk '{print $3}')
-for g in uiStateVersionMuteSolo uiStateVersionAux uiStateVersionVolumeLin; do
+for g in uiStateVersionMuteSolo uiStateVersionAux uiStateVersionVolumeLin uiStateVersionMeters; do
   gv=$(grep -E "^\s*$g\s*=" "$GO" | sed -E 's/^[^=]*=\s*([0-9]+).*/\1/')
   if [ -z "$gv" ] || [ "$gv" -gt "$cv" ]; then
     echo "FAIL $g = ${gv:-missing}, but SHADOW_UI_STATE_VERSION is $cv"; fails=$((fails+1))

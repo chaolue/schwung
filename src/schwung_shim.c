@@ -47,6 +47,7 @@
 #include "host/surface_live_shm.h"
 #include "host/audio_live_shm.h"
 #include "host/mix_soft_clip.h"
+#include "host/mix_meter.h"    /* the Remote UI Mixer's peak meters */
 #include "host/ui_midi_ring.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/move_ui_mode_label.h"
@@ -2802,11 +2803,62 @@ static inline void shadow_stem_frame_reset(void) {
     memset(shadow_stem_valid, 0, sizeof(shadow_stem_valid));
 }
 
+/*
+ * THE MIXER'S METERS (mix_meter.h), published in /schwung-ui version 5.
+ *
+ * Strips: the slots, then the two send returns, then the master bus. Each is
+ * tapped where it JOINS the mix -- a slot beside its stem (the stems are built
+ * to sum to the master, so that is exactly what it contributes), a return
+ * beside its stem, the master bus after its Level / Mute. `blk` is this
+ * block's peak, cleared at the top of the mix; `held` falls 20 dB/s and is
+ * what the segment carries. A strip nothing tapped this block simply falls.
+ */
+#define SHADOW_METER_RETURN0 SHADOW_CHAIN_INSTANCES
+#define SHADOW_METER_MASTER  (SHADOW_METER_RETURN0 + SEND_BUSES)
+#define SHADOW_METER_STRIPS  (SHADOW_METER_MASTER + 1)
+_Static_assert(SHADOW_UI_SEND_RETURNS == SEND_BUSES, "one return meter per send bus");
+_Static_assert(SHADOW_UI_SLOTS == SHADOW_CHAIN_INSTANCES, "one slot meter per chain slot");
+static float shadow_meter_blk[SHADOW_METER_STRIPS][2];
+static float shadow_meter_held[SHADOW_METER_STRIPS][2];
+
+static inline void shadow_meters_frame_begin(void) {
+    memset(shadow_meter_blk, 0, sizeof(shadow_meter_blk));
+}
+
+static inline void shadow_meter_tap(int strip, const int16_t *buf, float gl, float gr) {
+    if (strip < 0 || strip >= SHADOW_METER_STRIPS) return;
+    mix_meter_peak(buf, FRAMES_PER_BLOCK, gl, gr, shadow_meter_blk[strip]);
+}
+
+/* Once per block, at the end of the mix: fall, take the block's peaks, and
+ * publish -- with Move's volume and the armed snapshot beside them. Plain
+ * aligned stores into the segment, as every other field there is written. */
+static void shadow_meters_publish(void) {
+    for (int i = 0; i < SHADOW_METER_STRIPS; i++)
+        for (int c = 0; c < 2; c++)
+            shadow_meter_held[i][c] = mix_meter_fall(shadow_meter_held[i][c], shadow_meter_blk[i][c]);
+    if (!shadow_ui_state) return;
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        shadow_ui_state->meter_slot[i][0] = shadow_meter_held[i][0];
+        shadow_ui_state->meter_slot[i][1] = shadow_meter_held[i][1];
+    }
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        shadow_ui_state->meter_return[sb][0] = shadow_meter_held[SHADOW_METER_RETURN0 + sb][0];
+        shadow_ui_state->meter_return[sb][1] = shadow_meter_held[SHADOW_METER_RETURN0 + sb][1];
+    }
+    shadow_ui_state->meter_master[0] = shadow_meter_held[SHADOW_METER_MASTER][0];
+    shadow_ui_state->meter_master[1] = shadow_meter_held[SHADOW_METER_MASTER][1];
+    shadow_ui_state->move_volume = shadow_master_volume;
+    shadow_ui_state->scene_edit = shadow_scene_edit_now;
+}
+
 static inline void shadow_stem_store(int idx, const int16_t *src, float gain);
-/* The slot stem, panned like the slot main mix. */
+/* The slot stem, panned like the slot main mix -- and the slot's meter, which
+ * is taken here whether or not stems are wanted. */
 static inline void shadow_stem_store_slot(int s, const int16_t *src, float gain) {
     float gl, gr;
     shadow_pan_gains(s, &gl, &gr);
+    shadow_meter_tap(s, src, gain * gl, gain * gr);
     if (gl == 1.0f && gr == 1.0f) { shadow_stem_store(s, src, gain); return; }
     if (!shadow_stems_wanted || s < 0 || s >= SAMPLER_STEM_COUNT || !src) return;
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -2944,10 +2996,14 @@ static void shadow_inprocess_mix_from_buffer(void) {
         memset(native_bridge_me_component, 0, AUDIO_BUFFER_SIZE);
         native_bridge_capture_mv = shadow_master_volume;
         native_bridge_split_valid = 1;
+        /* Nothing of ours played: every meter falls. */
+        shadow_meters_frame_begin();
+        shadow_meters_publish();
         return;
     }
 
     shadow_stem_frame_reset();
+    shadow_meters_frame_begin();
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
@@ -3744,6 +3800,12 @@ skip_la_rebuild:
             shadow_stem_store(SAMPLER_STEM_SEND_A + sb, send_ret, 1.0f);
         }
 
+        /* The return's meter: what the master add below receives. */
+        {
+            const float g = (float)send_lvl / (float)BUS_MIX_SEND_LEVEL_MAX;
+            shadow_meter_tap(SHADOW_METER_RETURN0 + sb, send_out[sb], g, g);
+        }
+
         if (rebuild_from_la)
             bus_mix_send_i32(la_acc, send_out[sb], FRAMES_PER_BLOCK * 2, send_lvl);
         else
@@ -3835,6 +3897,9 @@ skip_la_rebuild:
             if (fabsf(mbus_gain - t) < 1e-4f) mbus_gain = t;
         }
     }
+    /* The master meter: the bus after its Level / Mute, before Move's knob. */
+    shadow_meter_tap(SHADOW_METER_MASTER, fx_target, 1.0f, 1.0f);
+    shadow_meters_publish();
 
     /* Sum ME bus (after FX) into mailbox at master volume level.
      * Move's audio in mailbox is already at mv; ME needs mv applied here.

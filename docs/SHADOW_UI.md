@@ -2467,6 +2467,25 @@ read -- so the manager treats them as one thing with three prefixes
   field restores its DEFAULT on a set change, so a set cannot inherit the
   previous one's master mute. Master FX Settings and a send's Settings carry
   them on both the grid and the list.
+- **Meters cost no param reads: they ride in `/schwung-ui` version 5**
+  (`meter_slot` / `meter_return` / `meter_master`, plus `move_volume` and the
+  armed `scene_edit`), written by the shim at the end of every mix block. Each
+  strip is tapped where it JOINS the mix -- a slot beside its stem (taken
+  before the stems-wanted early return, since stems are off by default), a
+  return after its mute, the master bus after its Level and before the capture
+  views -- and published as a HELD peak falling 20 dB/s (`mix_meter.h`). That
+  fall is what removes any handshake: a 20 Hz reader cannot miss a peak, and
+  never resets anything. The manager sends them as their own `mixer_meters`
+  message, on change or once a second, never through the store (they are not
+  state a client must keep, and a dropped one is replaced by the next).
+  `test_mix_meter.sh` pins both the maths and where the three taps sit.
+  The page draws every strip on ONE scale (full height = 0 dBFS), not the
+  fader's: a slot fader reaches +12 dB, and a meter on that taper would put
+  full scale four fifths of the way up on some strips and at the top on others.
+- **A scene snapshot armed for editing turns the Mixer's writes into LOCKS**,
+  so the page says so (a banner naming the snapshot) for as long as it is
+  armed. Move's own master volume is shown read-only in the Master strip's
+  header: Schwung reads it from Move and cannot set it.
 - **A failed LAST read dropped the whole final batch** of a component's values
   on subscribe (`sendInitialParamValues`: a `continue` jumped the flush). Found
   by the first send test, whose module's last parameter had no value; it applied

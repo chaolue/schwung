@@ -274,6 +274,7 @@
                 return;
             case "mixer_state":
             case "mixer_update":
+            case "mixer_meters":
                 if (mixer) mixer.handle(msg);
                 return;
             case "rename_result":

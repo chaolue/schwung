@@ -1236,6 +1236,82 @@
     opacity: 0.5;
 }
 
+/* Peak meters beside each fader: one scale everywhere, full height = 0 dBFS.
+   The mask covers the unlit part from the top, so the colour of a level is
+   fixed to its height (green, amber from -12 dB, red from -3 dB). */
+.mixer {
+    --meter-green: var(--color-success);
+    --meter-amber: var(--color-warning);
+    --meter-red: var(--color-danger);
+}
+
+.mixer-meter {
+    position: relative;
+    display: flex;
+    align-self: stretch;
+    margin-left: 4px;
+}
+
+.mixer-meter-bars {
+    display: flex;
+    gap: 2px;
+    height: 100%;
+}
+
+.mixer-meter-bar {
+    position: relative;
+    width: 4px;
+    height: 100%;
+    border-radius: 1px;
+    overflow: hidden;
+}
+
+.mixer-meter-mask {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+    background: var(--bg);
+    transition: height 50ms linear;
+}
+
+/* Lit once full scale was reached; stays lit until clicked. */
+.mixer-clip {
+    position: absolute;
+    top: -7px;
+    left: 0;
+    right: 0;
+    height: 5px;
+    padding: 0;
+    border: none;
+    border-radius: 1px;
+    background: var(--meter-red);
+    cursor: pointer;
+}
+
+.mixer-clip[hidden] {
+    display: none;
+}
+
+/* A scene snapshot is armed: the Mixer's writes are going to it. */
+.mixer-armed {
+    margin: 0 0 var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    border-left: 3px solid var(--color-warning);
+    background: var(--bg-card);
+    font-size: 0.85rem;
+}
+
+.mixer-armed[hidden] {
+    display: none;
+}
+
+.mixer-move-volume {
+    font-size: 0.65rem;
+    text-align: center;
+}
+
 /* A return's fader with its mute under it. */
 .mixer-return-col {
     display: flex;

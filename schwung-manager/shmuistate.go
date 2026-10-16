@@ -52,12 +52,21 @@ const (
 	uiOffAuxMuted      = 560 // uint8 x 4 (version >= 3)
 	uiOffAuxSoloed     = 564 // uint8 x 4 (version >= 3)
 	uiOffSlotVolumeLin = 568 // float32 x SHADOW_UI_SLOTS (version >= 4)
+	uiOffMeterSlot     = 600 // float32 x SHADOW_UI_SLOTS x 2 (version >= 5)
+	uiOffMeterReturn   = 664 // float32 x 2 returns x 2 (version >= 5)
+	uiOffMeterMaster   = 680 // float32 x 2 (version >= 5)
+	uiOffMoveVolume    = 688 // float32 (version >= 5)
+	uiOffSceneEdit     = 692 // uint8, 0xFF none (version >= 5)
 
 	// The last byte this reader touches. A segment shorter than this is not one
 	// we understand -- see OpenShmUIState. (The shim always creates the full
 	// SHADOW_UI_BUFFER_SIZE; the version, not the length, says which fields
 	// are filled in.)
 	uiStateMinBytes = uiOffSlotVolumeLin + 4*uiStateSlots
+
+	// The last byte the version 5 fields reach. Mapped when the segment is
+	// that long; a shorter one simply has no meters.
+	uiStateV5Bytes = uiOffSceneEdit + 1
 
 	// SHADOW_UI_STATE_VERSION 2 appended muted/soloed. Below it those bytes are
 	// zero, and zero means "not muted" -- a plausible-looking wrong answer, so
@@ -71,6 +80,12 @@ const (
 	// Version 4 appended every slot's volume as a float. Before it there is
 	// only whole percent, which cannot say a quiet level: -45 dB is 0.0056.
 	uiStateVersionVolumeLin = 4
+
+	// Version 5 appended the Mixer's meters, Move's volume and the armed
+	// scene snapshot.
+	uiStateVersionMeters = 5
+
+	uiStateReturns = 2 // SHADOW_UI_SEND_RETURNS
 )
 
 // uiStatePath is a var rather than a const so a test can point it at a file.
@@ -93,7 +108,11 @@ func OpenShmUIState() *ShmUIState {
 	if err != nil || st.Size() < uiStateMinBytes {
 		return nil
 	}
-	data, err := syscall.Mmap(int(f.Fd()), 0, uiStateMinBytes,
+	n := uiStateMinBytes
+	if st.Size() >= uiStateV5Bytes {
+		n = uiStateV5Bytes
+	}
+	data, err := syscall.Mmap(int(f.Fd()), 0, n,
 		syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
 		return nil
@@ -175,3 +194,51 @@ func parseUIState(b []byte) ([uiStateSlots]UIStateSlot, error) {
 // than any fader step (a fader is 1000 steps over 60 dB) and steady enough
 // that a float32 round trip does not register as a change every poll.
 func formatUIVolume(v float64) string { return strconv.FormatFloat(v, 'f', 4, 64) }
+
+// UIMeters is the version 5 block: each strip's held peak (linear, 1.0 = full
+// scale, falling 20 dB/s on the shim side), Move's volume, and the snapshot
+// armed for editing (-1 none). OK is false before version 5.
+type UIMeters struct {
+	OK         bool
+	Slots      [uiStateSlots][2]float64
+	Returns    [uiStateReturns][2]float64
+	Master     [2]float64
+	MoveVolume float64
+	SceneEdit  int
+}
+
+// ReadMeters copies the version 5 block. Like Read, no seqlock: each value is
+// one aligned store, so a racing read is at worst a block stale.
+func (s *ShmUIState) ReadMeters() UIMeters {
+	if s == nil {
+		return UIMeters{SceneEdit: -1}
+	}
+	return parseUIMeters(s.data)
+}
+
+func parseUIMeters(b []byte) UIMeters {
+	m := UIMeters{SceneEdit: -1}
+	if len(b) < uiStateV5Bytes || binary.LittleEndian.Uint32(b[uiOffVersion:]) < uiStateVersionMeters {
+		return m
+	}
+	f := func(off int) float64 {
+		v := float64(math.Float32frombits(binary.LittleEndian.Uint32(b[off:])))
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return 0
+		}
+		return v
+	}
+	for i := 0; i < uiStateSlots; i++ {
+		m.Slots[i] = [2]float64{f(uiOffMeterSlot + 8*i), f(uiOffMeterSlot + 8*i + 4)}
+	}
+	for i := 0; i < uiStateReturns; i++ {
+		m.Returns[i] = [2]float64{f(uiOffMeterReturn + 8*i), f(uiOffMeterReturn + 8*i + 4)}
+	}
+	m.Master = [2]float64{f(uiOffMeterMaster), f(uiOffMeterMaster + 4)}
+	m.MoveVolume = f(uiOffMoveVolume)
+	if e := b[uiOffSceneEdit]; e != 0xFF && e < 32 {
+		m.SceneEdit = int(e)
+	}
+	m.OK = true
+	return m
+}

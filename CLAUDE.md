@@ -1992,6 +1992,11 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
   unserved `master_fx:volume` once wrote into position 1's module. Level sits
   after Master FX and BEFORE the capture views; Move's knob stays the output.
   Saved in `send_levels.json`, where an absent field is its DEFAULT.
+- **Meters ride in `/schwung-ui` v5, as HELD peaks falling 20 dB/s**
+  (`mix_meter.h`), so the manager's 20 Hz poll can never miss one and never
+  resets anything -- no handshake with the audio thread. Each strip is tapped
+  where it JOINS the mix; `test_mix_meter.sh` pins where. The same block
+  carries Move's volume and the armed snapshot (the Mixer's armed banner).
 
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's
