@@ -1362,6 +1362,11 @@
     position: relative;
 }
 
+/* Room for the cross, so a long name ends in an ellipsis beside it. */
+.mixer-pinned .mixer-label {
+    padding-right: 18px;
+}
+
 .mixer-unpin {
     position: absolute;
     top: -2px;
@@ -1387,4 +1392,26 @@
 .mixer-unpin:focus-visible {
     outline: var(--focus-ring);
     outline-offset: 1px;
+}
+
+/* A choice parameter pinned to a strip. */
+.mixer-select {
+    width: 100%;
+    min-height: 30px;
+    padding: 2px var(--space-xs);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-stack);
+    font-size: 0.75rem;
+}
+
+.mixer-select:disabled {
+    opacity: 0.35;
+}
+
+.mixer-select:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
 }

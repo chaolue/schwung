@@ -80,6 +80,12 @@ const dk = M.fxKind({ min: -12, max: 12, step: 0, unit: "dB" });
 check(dk.toInput("-12") === 0 && dk.toInput("12") === dk.max && parseFloat(dk.toWire(dk.max)) === 12, "a bipolar knob with no step");
 check(dk.toInput("99") === dk.max && dk.toInput("nope") === 0, "out-of-range and junk values are clamped, not thrown");
 check(pk.unity === null, "an effect knob has no double-tap reset");
+// Freeverb's wet: 0..1 AND unit "%". The top is 100%, not "1%" (reported off
+// a device: the knob read 0%..1%).
+const fv = M.fxKind({ min: 0, max: 1, step: 0.05, unit: "%" });
+check(fv.text("1") === "100%" && fv.text("0.35") === "35%" && fv.text("0") === "0%", "0..1 with unit % reads 0-100%: " + fv.text("1"));
+const pc = M.fxKind({ min: 0, max: 100, step: 1, unit: "%" });
+check(pc.text("40") === "40%", "a range already in percent is shown as it stands");
 for (let i = 0; i <= pk.max; i++) {
   const v = parseFloat(pk.toWire(i));
   check(v >= 0 && v <= 1 && pk.toInput(pk.toWire(i)) === i, "0..1 knob round-trips at " + i);

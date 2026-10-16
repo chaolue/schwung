@@ -1975,7 +1975,8 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
   parameter elsewhere made the next turn JUMP it back.
 - **Pins are per SET** (`set_state/<uuid>/mixer_pins.json`) and remember the
   MODULE they were made on — a different module in that position hides the pin
-  rather than driving a stranger's parameter of the same key.
+  rather than driving a stranger's parameter of the same key. An effect's mix
+  is a DEFAULT pin (`offered`), so it can be unpinned and stays unpinned.
 
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's

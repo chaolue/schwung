@@ -1285,6 +1285,8 @@
                 sendParamValue(activeSlot, compPrefix, key, parseInt(v, 10));
             };
             controlWrap.appendChild(select);
+            var choicePin = makePinButton(compPrefix, key, meta);
+            if (choicePin) controlWrap.appendChild(choicePin);
         } else if (meta.type === "float" || meta.type === "int") {
             var slider = document.createElement("input");
             slider.type = "range";
@@ -1913,8 +1915,11 @@
 
     function makePinButton(comp, key, meta) {
         if (typeof activeSlot !== "number") return null;           // chain slots only
-        if (!meta || !(meta.type === "float" || meta.type === "int" || !meta.type) ||
-            typeof meta.min !== "number" || typeof meta.max !== "number") return null;
+        if (!meta) return null;
+        var numeric = (meta.type === "float" || meta.type === "int" || !meta.type) &&
+            typeof meta.min === "number" && typeof meta.max === "number" && meta.max > meta.min;
+        var choice = meta.type === "enum" && meta.options && meta.options.length >= 2;
+        if (!numeric && !choice) return null;
         var full = comp + ":" + key;
         var name = (meta && meta.name) || key;
         var b = document.createElement("button");

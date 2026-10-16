@@ -2387,7 +2387,20 @@ Any numeric knob on a Remote UI Slot tab (a mapped knob, a knob tile, a numeric
 parameter row) has a pin; a pinned parameter appears on that slot's Mixer strip
 under **Pinned**, drawn and written exactly like the effect knobs (range from the
 module's `chain_params`, cached per module id; writes allowed only for what the
-strip shows). At most 4 per slot. `remote_ui_pins.go`.
+strip shows). At most 8 per slot, an effect's mix included. A CHOICE
+parameter (an enum with options) pins too, as a dropdown whose value is the
+option's index; the device may report it by NAME, which is mapped to the index.
+`remote_ui_pins.go`.
+
+**An effect's mix is a DEFAULT pin, not a fixed knob.** The strip draws only
+pins. The first time an effect is seen in a position its mix (its
+`mixer_params`, else the exact-name guess) is pinned for it and the placement
+recorded in the file's `offered`; from then on it is an ordinary pin -- unpin it
+and it stays unpinned, however often the slot is read again. A DIFFERENT module
+in that position is newly added and gets its own. A slot read as EMPTY (mid
+load) is not a replacement, so it cannot spend an offer and resurrect an
+unpinned default. With no set to keep pins in, the effects' mixes are shown as
+before, unremovable, rather than nothing.
 
 **Pins belong to the SET**: `set_state/<uuid>/mixer_pins.json`, the uuid from
 line 1 of `active_set.txt`. So they travel with the set — a duplicate gets them,
@@ -2399,6 +2412,10 @@ file the manager could not find.
 **A pin remembers the MODULE it was made on.** If a different module sits in
 that position now, the pin is hidden — `fx2:mix` on a new effect is a different
 control that happens to share a key — and it comes back when that module does.
+**A 0..1 range is a FRACTION**, shown 0-100%, even when the module ALSO says
+`"unit": "%"` -- Freeverb's wet is exactly that, and it read 0%..1% on a device.
+Only a range already in percent is shown as it stands.
+
 The browser's pin buttons show only what the server's `mixer_pins` says, never
 their own guess, and a refusal (the cap, an enum) is announced and changes
 nothing.

@@ -6,6 +6,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,9 +55,14 @@ type mixerFxKnob struct {
 	Int     bool    `json:"int,omitempty"`
 	Unit    string  `json:"unit,omitempty"`
 	Guessed bool    `json:"guessed,omitempty"`
-	// Pinned: put on the strip from a Slot tab (remote_ui_pins.go), not
-	// chosen as the effect's mix.
+	// Pinned: every knob on a strip is a pin now (remote_ui_pins.go), so
+	// every one can be unpinned. Effect: this pin is its module's mix -- drawn
+	// under "Effects" rather than "Pinned".
 	Pinned bool `json:"pinned,omitempty"`
+	Effect bool `json:"effect,omitempty"`
+	// Options: a choice parameter (an enum) -- drawn as a dropdown, its value
+	// the option's index.
+	Options []string `json:"options,omitempty"`
 }
 
 // fxParamMeta is the slice of a chain_params entry a knob needs.
@@ -68,16 +75,24 @@ type fxParamMeta struct {
 	Max       *float64 `json:"max"`
 	Step      float64  `json:"step"`
 	Unit      string   `json:"unit"`
+	Options   []string `json:"options"`
 }
 
-// usable: a numeric parameter with a real range -- an enum or an unbounded
-// value cannot be a fader.
-func (m fxParamMeta) usable() bool {
+// numeric: a parameter with a real range a fader can drive.
+func (m fxParamMeta) numeric() bool {
 	if m.Key == "" || m.Min == nil || m.Max == nil || !(*m.Max > *m.Min) {
 		return false
 	}
 	return m.Type == "" || m.Type == "float" || m.Type == "int"
 }
+
+// choice: an enum with at least two options, drawn as a dropdown.
+func (m fxParamMeta) choice() bool {
+	return m.Key != "" && m.Type == "enum" && len(m.Options) >= 2
+}
+
+// usable: something a strip can draw -- a fader or a dropdown.
+func (m fxParamMeta) usable() bool { return m.numeric() || m.choice() }
 
 // fxKnobTemplate is a knob before it is placed in a position.
 type fxKnobTemplate struct {
@@ -106,7 +121,7 @@ func pickFxKnobs(declared []string, params []fxParamMeta) []fxKnobTemplate {
 		return out // declared: exactly what was declared, nothing guessed beside it
 	}
 	for _, k := range mixerFxGuessKeys {
-		if p, ok := byKey[k]; ok {
+		if p, ok := byKey[k]; ok && p.numeric() {
 			return []fxKnobTemplate{{param: p, guessed: true}}
 		}
 	}
@@ -117,6 +132,11 @@ func (t fxKnobTemplate) place(comp, module string) mixerFxKnob {
 	name := t.param.Name
 	if name == "" {
 		name = t.param.Key
+	}
+	if t.param.choice() {
+		return mixerFxKnob{Comp: comp, Module: module, Key: comp + ":" + t.param.Key, Name: name,
+			Min: 0, Max: float64(len(t.param.Options) - 1), Step: 1, Int: true,
+			Options: append([]string{}, t.param.Options...), Guessed: t.guessed}
 	}
 	step := t.param.Step
 	isInt := t.param.Type == "int"
@@ -259,7 +279,15 @@ func (fs *mixerFxState) snapshot() map[string][]mixerFxKnob {
 }
 
 // normalizeFxValue clamps a reported value into the knob's range, or refuses it.
+// A choice may be reported by NAME; it is stored as its index.
 func normalizeFxValue(k mixerFxKnob, value string) (string, bool) {
+	if len(k.Options) > 0 {
+		for i, o := range k.Options {
+			if o == strings.TrimSpace(value) {
+				return strconv.Itoa(i), true
+			}
+		}
+	}
 	f, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 		return "", false
@@ -342,28 +370,39 @@ func (ru *RemoteUI) mixerRefreshModules(ctx context.Context, slot int, get param
 	if err != nil {
 		return false
 	}
-	var knobs []mixerFxKnob
-	for i := 1; i <= chainFxPositions; i++ {
-		comp := "fx" + strconv.Itoa(i)
-		id := mods[comp]
-		if id == "" {
-			continue
+	// Each effect's mix is pinned by default the first time it is seen in its
+	// position (remote_ui_pins.go); after that it is an ordinary pin.
+	if !ru.offerDefaultPins(ctx, slot, mods, get) {
+		return false
+	}
+	// No set to keep pins in (off-device, or active_set.txt unreadable): show
+	// the effects' mixes as before, just not removable, rather than nothing.
+	ru.pins.mu.Lock()
+	_, pinsErr := readPins(ru.basePath)
+	ru.pins.mu.Unlock()
+	if pinsErr != nil {
+		var fallback []mixerFxKnob
+		for i := 1; i <= chainFxPositions; i++ {
+			comp := "fx" + strconv.Itoa(i)
+			if id := mods[comp]; id != "" {
+				tmpl, ok := ru.mixerFxTemplates(id, comp, uint8(slot), get)
+				if !ok {
+					return false
+				}
+				for _, t := range tmpl {
+					k := t.place(comp, id)
+					k.Effect = true
+					fallback = append(fallback, k)
+				}
+			}
 		}
-		tmpl, ok := ru.mixerFxTemplates(id, comp, uint8(slot), get)
-		if !ok {
-			return false // the read did not complete: keep what is shown
-		}
-		for _, t := range tmpl {
-			knobs = append(knobs, t.place(comp, id))
-		}
+		return ru.mixerSetKnobs(ctx, slot, fallback, get)
 	}
 
-	// Pinned parameters, after the effects. A pin made on a module that is no
-	// longer in its position is hidden, never pointed at a stranger.
+	// The strip is the slot's PINS. A pin made on a module that is no longer
+	// in its position is hidden, never pointed at a stranger.
+	var effects, others []mixerFxKnob
 	have := map[string]bool{}
-	for _, k := range knobs {
-		have[k.Key] = true
-	}
 	for _, pin := range ru.slotPins(slot) {
 		comp, param, _ := strings.Cut(pin.Key, ":")
 		id := mods[comp]
@@ -380,10 +419,36 @@ func (ru *RemoteUI) mixerRefreshModules(ctx context.Context, slot int, get param
 		}
 		k := fxKnobTemplate{param: meta}.place(comp, id)
 		k.Pinned = true
-		knobs = append(knobs, k)
 		have[pin.Key] = true
+		// Its module's mix? Then it reads as one of the slot's effects.
+		if kind, _, _ := componentPosition(comp); kind == "fx" {
+			if tmpl, ok := ru.mixerFxTemplates(id, comp, uint8(slot), get); ok {
+				for _, t := range tmpl {
+					if t.param.Key == param {
+						k.Effect, k.Guessed = true, t.guessed
+					}
+				}
+			}
+		}
+		if k.Effect {
+			effects = append(effects, k)
+		} else {
+			others = append(others, k)
+		}
 	}
+	// Effects in signal-flow order, then the other pins in the order pinned.
+	sort.SliceStable(effects, func(i, j int) bool {
+		_, pi, _ := componentPosition(effects[i].Comp)
+		_, pj, _ := componentPosition(effects[j].Comp)
+		return pi < pj
+	})
+	knobs := append(effects, others...)
 
+	return ru.mixerSetKnobs(ctx, slot, knobs, get)
+}
+
+// mixerSetKnobs installs a slot's knob list and reads the values of new ones.
+func (ru *RemoteUI) mixerSetKnobs(ctx context.Context, slot int, knobs []mixerFxKnob, get paramGetter) bool {
 	fs := &ru.mix.fx
 	fs.mu.Lock()
 	fs.init()
@@ -494,13 +559,8 @@ func (ru *RemoteUI) mixerReadFx(ctx context.Context, keys []mixerKeyRef, get par
 }
 
 func sameKnobs(a, b []mixerFxKnob) bool {
-	if len(a) != len(b) {
-		return false
+	if len(a) == 0 && len(b) == 0 {
+		return true
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return reflect.DeepEqual(a, b)
 }

@@ -109,6 +109,14 @@
         }
     };
 
+    // "fx3" -> "Audio FX 3", "midi_fx2" -> "MIDI FX 2", "synth" -> "Synth".
+    function COMPONENT_NAMES(comp) {
+        if (comp === "synth") return "Synth";
+        if (comp.indexOf("midi_fx") === 0) return "MIDI FX " + comp.slice(7);
+        if (comp.indexOf("fx") === 0) return "Audio FX " + comp.slice(2);
+        return comp;
+    }
+
     // An effect knob's kind, from the range the module declares. The input is
     // integer steps across [min, max] (at most FADER_STEPS of them); the wire
     // carries the module's own units. A 0..1 range or a "%" unit reads as a
@@ -117,7 +125,12 @@
         var span = knob.max - knob.min;
         var steps = Math.max(1, Math.min(FADER_STEPS, Math.round(span / (knob.step > 0 ? knob.step : span / 100))));
         var decimals = knob.int ? 0 : Math.max(0, Math.min(4, Math.ceil(-Math.log(span / steps) / Math.LN10)));
-        var percent = knob.unit === "%" || (knob.min === 0 && knob.max === 1);
+        // A 0..1 range is a FRACTION, shown as 0-100% -- even when the module
+        // also says "%" (Freeverb's wet is 0..1 with unit "%", and read as a
+        // percentage that topped out at "1%"). Only a range already in
+        // percent (0..100 with "%") is shown as it stands.
+        var fraction = knob.min >= 0 && knob.max <= 1;
+        var percent = fraction || knob.unit === "%";
         return {
             name: "fx", min: 0, max: steps, step: 1, vertical: false, unity: null,
             toInput: function (v) {
@@ -133,7 +146,7 @@
                 var f = parseFloat(v);
                 if (!isFinite(f)) return "\u2014";
                 if (percent) {
-                    var pct = knob.unit === "%" ? f : (f - knob.min) / span * 100;
+                    var pct = fraction ? (f - knob.min) / span * 100 : f;
                     return Math.round(pct) + "%";
                 }
                 return (knob.int ? String(Math.round(f)) : f.toFixed(Math.min(decimals, 2))) +
@@ -155,6 +168,7 @@
         var synced = false;      // a mixer_state has arrived since subscribing
         var rootEl = null;
         var controls = {};       // id -> control (sliders)
+        var selects = {};        // id -> choice control (dropdowns)
         var toggles = {};        // id -> { button, label }
         var names = [];          // per-slot name element
         var fxKnobs = {};        // slot ("0".."7") -> the server's knob list; absent = not read
@@ -303,6 +317,7 @@
             if (!attached()) return;
             var ctl = controls[cid];
             if (ctl && !held(ctl)) paintSlider(ctl);
+            if (selects[cid]) paintChoice(selects[cid]);
             if (toggles[cid]) paintToggle(toggles[cid]);
             var bar = cid.indexOf("|");
             var slot = parseInt(cid.slice(0, bar), 10);
@@ -312,6 +327,7 @@
         function refreshAll() {
             if (!attached()) return;
             for (var c in controls) if (!held(controls[c])) paintSlider(controls[c]);
+            for (var sc in selects) paintChoice(selects[sc]);
             for (var t in toggles) paintToggle(toggles[t]);
             for (var s = 0; s < SLOTS; s++) paintStrip(s);
             if (noticeEl) {
@@ -493,6 +509,9 @@
                     delete controls[cid];
                 }
             }
+            for (var sid in selects) {
+                if (selects[sid].slot === slot) delete selects[sid];
+            }
             box.textContent = "";
             var list = fxKnobs[String(slot)] || [];
             box.hidden = list.length === 0;
@@ -500,24 +519,26 @@
             var lastGroup = null;
             for (var i = 0; i < list.length; i++) {
                 var k = list[i];
-                var group = k.pinned ? "Pinned" : "Effects";
+                // The server decides: an effect's mix reads as one of the
+                // slot's Effects, anything else pinned reads as Pinned.
+                var group = k.effect ? "Effects" : "Pinned";
                 if (group !== lastGroup) {
                     box.appendChild(el("div", "mixer-fx-title", group));
                     lastGroup = group;
                 }
-                var pos = k.comp.replace("fx", "FX ");
-                var label = k.module + " " + k.name.toLowerCase();
-                var wrap = slider(slot, k.key, fxKind(k), label,
-                    "Slot " + (slot + 1) + " " + pos + " " + k.module + " " + k.name);
+                var pos = COMPONENT_NAMES(k.comp);
+                var label = (k.comp === "synth" ? "" : k.module + " ") + k.name.toLowerCase();
+                var aria = "Slot " + (slot + 1) + " " + pos + " " + k.module + " " + k.name;
+                var wrap = (k.options && k.options.length) ? choice(slot, k, label, aria)
+                                                           : slider(slot, k.key, fxKind(k), label, aria);
                 var ctl = controls[id(slot, k.key)];
                 if (ctl) ctl.fx = true;
                 var lab = wrap.querySelector(".mixer-label");
-                lab.title = "Audio " + pos + " \u00b7 " + k.module + " \u00b7 " + k.name +
+                lab.title = pos + " \u00b7 " + k.module + " \u00b7 " + k.name +
                     (k.guessed ? " (the Mixer picked this parameter by its name)" : "");
                 if (k.guessed) wrap.classList.add("mixer-guessed");
                 if (k.pinned) {
                     wrap.classList.add("mixer-pinned");
-                    lab.textContent = (k.comp === "synth" ? "" : k.module + " ") + k.name.toLowerCase();
                     var un = el("button", "mixer-unpin", "\u00d7");
                     un.type = "button";
                     un.setAttribute("aria-label", "Unpin " + k.name + " from slot " + (slot + 1));
@@ -530,8 +551,47 @@
                     wrap.insertBefore(un, wrap.firstChild);
                 }
                 box.appendChild(wrap);
-                if (attached()) paintSlider(controls[id(slot, k.key)]);
+                if (attached()) {
+                    if (controls[id(slot, k.key)]) paintSlider(controls[id(slot, k.key)]);
+                    if (selects[id(slot, k.key)]) paintChoice(selects[id(slot, k.key)]);
+                }
             }
+        }
+
+        // A CHOICE parameter (an enum) on a strip: a native select, so the
+        // keyboard and a screen reader get it for free. Its value is the
+        // option's index; nothing is assumed -- the device's echo sets it.
+        function choice(slot, k, label, aria) {
+            var c = { id: id(slot, k.key), slot: slot, key: k.key, options: k.options };
+            var wrap = el("div", "mixer-control mixer-choice");
+            var selId = "mixer-ctl-" + (++uid);
+            var lab = el("label", "mixer-label", label);
+            lab.setAttribute("for", selId);
+            var sel = document.createElement("select");
+            sel.id = selId;
+            sel.className = "mixer-select";
+            sel.setAttribute("aria-label", aria);
+            sel.disabled = true;
+            for (var i = 0; i < k.options.length; i++) {
+                var o = document.createElement("option");
+                o.value = String(i);
+                o.textContent = k.options[i];
+                sel.appendChild(o);
+            }
+            sel.addEventListener("change", function () {
+                write(c, sel.value);
+            });
+            c.select = sel;
+            wrap.appendChild(lab);
+            wrap.appendChild(sel);
+            selects[c.id] = c;
+            return wrap;
+        }
+
+        function paintChoice(c) {
+            var ok = known(c.id);
+            c.select.disabled = !ok;
+            if (ok && document.activeElement !== c.select) c.select.value = String(parseInt(model[c.id], 10));
         }
 
         function slotStrip(slot) {
@@ -554,12 +614,12 @@
 
             strip.appendChild(slider(slot, "buses:main_send1", "send", "Send A", "Slot " + n + " send A"));
             strip.appendChild(slider(slot, "buses:main_send2", "send", "Send B", "Slot " + n + " send B"));
+            strip.appendChild(slider(slot, "slot:pan", "pan", "Pan", "Slot " + n + " pan"));
             var fxBox = el("div", "mixer-fx");
             fxBox.setAttribute("role", "group");
             fxBox.setAttribute("aria-label", "Slot " + n + " effects");
             fxBoxes[slot] = fxBox;
             strip.appendChild(fxBox);
-            strip.appendChild(slider(slot, "slot:pan", "pan", "Pan", "Slot " + n + " pan"));
             strip.appendChild(slider(slot, "slot:volume", "volume", "Level", "Slot " + n + " level"));
 
             var btns = el("div", "mixer-buttons");
@@ -589,6 +649,7 @@
 
         function render(container) {
             controls = {};
+            selects = {};
             toggles = {};
             names = [];
             fxBoxes = [];

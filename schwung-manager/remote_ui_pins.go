@@ -26,7 +26,8 @@ import (
 // happens to share a key; it comes back if that module returns.
 // ---------------------------------------------------------------------------
 
-const maxPinsPerSlot = 4
+// maxPinsPerSlot counts every pin, an effect's default mix pin included.
+const maxPinsPerSlot = 8
 
 type pinEntry struct {
 	Key    string `json:"key"`    // "synth:cutoff"
@@ -36,6 +37,10 @@ type pinEntry struct {
 type pinDoc struct {
 	Version int                   `json:"version"`
 	Slots   map[string][]pinEntry `json:"slots"`
+	// Offered: per slot, the "fxN|module" placements whose default mix pin has
+	// been added once. Unpinning it does not bring it back; a DIFFERENT module
+	// loaded in that position is new, and gets its own.
+	Offered map[string][]string `json:"offered,omitempty"`
 }
 
 type wsMixerPins struct {
@@ -85,8 +90,15 @@ func readPins(basePath string) (pinDoc, error) {
 	return doc, nil
 }
 
-// writePins replaces the active set's pins file atomically.
+// writePins replaces the active set's pins file atomically. A slot with no
+// pins is left out (its offered record is kept: that is what stops an
+// unpinned default coming back).
 func writePins(basePath string, doc pinDoc) error {
+	for k, v := range doc.Slots {
+		if len(v) == 0 {
+			delete(doc.Slots, k)
+		}
+	}
 	uuid, err := activeSetUUID(basePath)
 	if err != nil {
 		return err
@@ -188,7 +200,7 @@ func (ru *RemoteUI) handlePinMixer(ctx context.Context, c *ruClient, msg wsMessa
 			return
 		}
 		if _, ok := findUsableParam(params, param); !ok {
-			fail(param + " is not a numeric parameter of " + module)
+			fail(param + " is not a parameter of " + module + " the Mixer can show")
 			return
 		}
 	}
@@ -211,11 +223,7 @@ func (ru *RemoteUI) handlePinMixer(ctx context.Context, c *ruClient, msg wsMessa
 			}
 			list = append(list, pinEntry{Key: msg.Key, Module: module})
 		}
-		if len(list) == 0 {
-			delete(doc.Slots, key)
-		} else {
-			doc.Slots[key] = list
-		}
+		doc.Slots[key] = list
 		err = writePins(ru.basePath, doc)
 	}
 	ru.pins.mu.Unlock()
@@ -227,6 +235,87 @@ func (ru *RemoteUI) handlePinMixer(ctx context.Context, c *ruClient, msg wsMessa
 	ru.broadcastPins(ctx, int(slot))
 	// The strip follows: the knob list is rebuilt from the pins.
 	ru.mixerScheduleModules(ctx, int(slot), 0)
+}
+
+// offerDefaultPins pins each newly seen effect's mix (its mixer_params, or the
+// guessed mix) once per placement. false: a read did not complete.
+func (ru *RemoteUI) offerDefaultPins(ctx context.Context, slot int, mods slotModules, get paramGetter) bool {
+	key := strconv.Itoa(slot)
+	ru.pins.mu.Lock()
+	doc, err := readPins(ru.basePath)
+	ru.pins.mu.Unlock()
+	if err != nil {
+		return true // no set to keep pins in: nothing to offer, nothing broken
+	}
+	offered := map[string]bool{}
+	for _, tag := range doc.Offered[key] {
+		offered[tag] = true
+	}
+	type offer struct {
+		comp, id string
+		tmpl     []fxKnobTemplate
+	}
+	var todo []offer
+	for i := 1; i <= chainFxPositions; i++ {
+		comp := "fx" + strconv.Itoa(i)
+		id := mods[comp]
+		if id == "" || offered[comp+"|"+id] {
+			continue
+		}
+		tmpl, ok := ru.mixerFxTemplates(id, comp, uint8(slot), get)
+		if !ok {
+			return false
+		}
+		todo = append(todo, offer{comp, id, tmpl})
+	}
+	if len(todo) == 0 {
+		return true
+	}
+
+	ru.pins.mu.Lock()
+	doc, err = readPins(ru.basePath) // again: another writer may have been here
+	if err != nil {
+		ru.pins.mu.Unlock()
+		return true
+	}
+	if doc.Offered == nil {
+		doc.Offered = map[string][]string{}
+	}
+	pins := doc.Slots[key]
+	tags := doc.Offered[key]
+	for _, o := range todo {
+		// A different module in this position: the old one's offer is spent.
+		kept := tags[:0:0]
+		for _, t := range tags {
+			if !strings.HasPrefix(t, o.comp+"|") {
+				kept = append(kept, t)
+			}
+		}
+		tags = append(kept, o.comp+"|"+o.id)
+		for _, t := range o.tmpl {
+			k := o.comp + ":" + t.param.Key
+			dup := false
+			for _, p := range pins {
+				if p.Key == k && p.Module == o.id {
+					dup = true
+				}
+			}
+			if !dup && len(pins) < maxPinsPerSlot {
+				pins = append(pins, pinEntry{Key: k, Module: o.id})
+			}
+		}
+	}
+	if doc.Slots == nil {
+		doc.Slots = map[string][]pinEntry{}
+	}
+	doc.Slots[key] = pins
+	doc.Offered[key] = tags
+	err = writePins(ru.basePath, doc)
+	ru.pins.mu.Unlock()
+	if err == nil {
+		ru.broadcastPins(ctx, slot)
+	}
+	return true
 }
 
 // findUsableParam is the named parameter if a fader can drive it.
