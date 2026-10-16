@@ -122,6 +122,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_slot_clip_phase \
 	$(BUILD_DIR)/test_web_send_levels \
 	$(BUILD_DIR)/test_slot_rename \
+	$(BUILD_DIR)/test_chain_modules_json \
 	$(BUILD_DIR)/test_rec_arm
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
@@ -400,6 +401,9 @@ $(BUILD_DIR)/test_web_send_levels: test_web_send_levels.c ../../src/host/shadow_
 # Includes shadow_chain_mgmt.c the same way test_web_send_levels does.
 $(BUILD_DIR)/test_slot_rename: test_slot_rename.c ../../src/host/shadow_chain_mgmt.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c | $(BUILD_DIR)
 	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -DMOVE_MODEL_PURE_ONLY $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_rename.c ../../src/host/move_model.c ../../src/host/clip_state.c ../../src/host/lane_trace.c ../../src/host/shadow_scene_bus.c -lm
+
+$(BUILD_DIR)/test_chain_modules_json: test_chain_modules_json.c ../../src/modules/chain/dsp/chain_modules_json.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -I../../src/modules/chain/dsp $< -o $@ $(LDFLAGS)
 
 # lane_store — the pure breakpoint store (Task 1 of automation lanes).
 $(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)

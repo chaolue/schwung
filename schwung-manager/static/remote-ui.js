@@ -5,38 +5,47 @@
 (function () {
     "use strict";
 
-    var COMPONENT_KEYS = ["synth", "fx1", "fx2", "midi_fx1"];
+    // EVERY position a chain slot has: the synth, eight audio FX (MAX_AUDIO_FX)
+    // and eight MIDI FX (MAX_MIDI_FX). This was the first four, so a module in
+    // fx3 or midi_fx2 loaded, ran and had no controls here at all. The server
+    // only ever reports the ones that are loaded, and only those are drawn.
+    var COMPONENT_KEYS = ["synth",
+        "fx1", "fx2", "fx3", "fx4", "fx5", "fx6", "fx7", "fx8",
+        "midi_fx1", "midi_fx2", "midi_fx3", "midi_fx4",
+        "midi_fx5", "midi_fx6", "midi_fx7", "midi_fx8"];
     // The order components are DRAWN in, which is signal flow and not the order
     // they are enumerated in. Both render paths read this one list; when they
     // each carried their own, the custom-synth path drew the MIDI FX last.
-    var COMPONENT_ORDER = ["midi_fx1", "synth", "fx1", "fx2"];
-    var COMPONENT_LABELS = {
-        synth: "Synth",
-        fx1: "Audio FX 1",
-        fx2: "Audio FX 2",
-        midi_fx1: "MIDI FX"
-    };
+    var COMPONENT_ORDER = ["midi_fx1", "midi_fx2", "midi_fx3", "midi_fx4",
+        "midi_fx5", "midi_fx6", "midi_fx7", "midi_fx8", "synth",
+        "fx1", "fx2", "fx3", "fx4", "fx5", "fx6", "fx7", "fx8"];
+    var COMPONENT_LABELS = { synth: "Synth" };
+    for (var cl = 1; cl <= 8; cl++) {
+        COMPONENT_LABELS["fx" + cl] = "Audio FX " + cl;
+        COMPONENT_LABELS["midi_fx" + cl] = "MIDI FX " + cl;
+    }
 
-    var MASTER_FX_KEYS = ["master_fx:fx1", "master_fx:fx2", "master_fx:fx3", "master_fx:fx4"];
-    var MASTER_FX_LABELS = {
-        "master_fx:fx1": "Master FX 1",
-        "master_fx:fx2": "Master FX 2",
-        "master_fx:fx3": "Master FX 3",
-        "master_fx:fx4": "Master FX 4"
-    };
+    // Every Master FX position (MASTER_FX_SLOTS).
+    var MASTER_FX_KEYS = [];
+    var MASTER_FX_LABELS = {};
+    for (var ml = 1; ml <= 8; ml++) {
+        MASTER_FX_KEYS.push("master_fx:fx" + ml);
+        MASTER_FX_LABELS["master_fx:fx" + ml] = "Master FX " + ml;
+    }
 
     function makeComponent() {
         return { hierarchy: null, chainParams: null, params: {}, navStack: ["root"], module: "" };
     }
 
+    function makeComponents(keys) {
+        var out = {};
+        for (var i = 0; i < keys.length; i++) out[keys[i]] = makeComponent();
+        return out;
+    }
+
     function makeSlot() {
         return {
-            components: {
-                synth: makeComponent(),
-                fx1: makeComponent(),
-                fx2: makeComponent(),
-                midi_fx1: makeComponent()
-            },
+            components: makeComponents(COMPONENT_KEYS),
             // Track which component sections the user has folded. A key is
             // absent until the header is clicked -- see sectionCollapsed(),
             // which derives the default from whether the component ships a
@@ -62,12 +71,7 @@
 
     // Master FX state.
     var masterFx = {
-        components: {
-            "master_fx:fx1": makeComponent(),
-            "master_fx:fx2": makeComponent(),
-            "master_fx:fx3": makeComponent(),
-            "master_fx:fx4": makeComponent()
-        },
+        components: makeComponents(MASTER_FX_KEYS),
         collapsed: {},
         // Keyed by component, exactly as a slot's is: two Master FX positions
         // can each ship a panel and must not collide.
@@ -326,16 +330,16 @@
         var s = slots[slot];
         // A component's custom UI belongs to the module that supplied it, so
         // drop it when that particular component's module changes.
-        var incoming = {
-            synth: msg.synth || "",
-            fx1: msg.fx1 || "",
-            fx2: msg.fx2 || "",
-            midi_fx1: msg.midi_fx1 || ""
+        // `modules` names every loaded position; an older server sent only
+        // these four fields.
+        var incoming = msg.modules || {
+            synth: msg.synth, fx1: msg.fx1, fx2: msg.fx2, midi_fx1: msg.midi_fx1
         };
         for (var ci = 0; ci < COMPONENT_KEYS.length; ci++) {
             var ck = COMPONENT_KEYS[ci];
-            if (s.components[ck].module !== incoming[ck]) {
-                s.components[ck].module = incoming[ck];
+            var mod = incoming[ck] || "";
+            if (s.components[ck].module !== mod) {
+                s.components[ck].module = mod;
                 delete s.customUI[ck];
             }
         }
@@ -501,16 +505,13 @@
     // ------------------------------------------------------------------
 
     function handleMasterFxInfo(msg) {
-        var incoming = {
-            "master_fx:fx1": msg.fx1 || "",
-            "master_fx:fx2": msg.fx2 || "",
-            "master_fx:fx3": msg.fx3 || "",
-            "master_fx:fx4": msg.fx4 || ""
-        };
+        // `modules` is keyed "fx1".."fx8"; an older server sent fx1..fx4.
+        var given = msg.modules || { fx1: msg.fx1, fx2: msg.fx2, fx3: msg.fx3, fx4: msg.fx4 };
         for (var i = 0; i < MASTER_FX_KEYS.length; i++) {
             var ck = MASTER_FX_KEYS[i];
-            if (masterFx.components[ck].module !== incoming[ck]) {
-                masterFx.components[ck].module = incoming[ck];
+            var mod = given[ck.slice("master_fx:".length)] || "";
+            if (masterFx.components[ck].module !== mod) {
+                masterFx.components[ck].module = mod;
                 // The panel belonged to the module that just left. Dropping it
                 // here is what makes a REMOVED module lose its iframe: the
                 // server only sends custom_ui for a module that has one, so

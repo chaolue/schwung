@@ -66,10 +66,31 @@ console.log("  sectionCollapsed: 7 cases OK");
 NODE
 
 # --- 2. Structure: one draw order, shared, signal flow. ---------------------
-order="$(grep -n 'var COMPONENT_ORDER *=' "$JS" || true)"
-[ -n "$order" ] || { echo "FAIL: COMPONENT_ORDER not declared"; exit 1; }
-echo "$order" | grep -q '"midi_fx1", *"synth"' || {
-    echo "FAIL: COMPONENT_ORDER must place midi_fx1 before synth (signal flow)"; exit 1; }
+# Evaluated, not grepped: the list covers every position now (8 MIDI FX, the
+# synth, 8 audio FX), so signal flow is "every MIDI FX, then the synth, then
+# every audio FX" -- and it must name each component exactly once, or one is
+# never drawn.
+node - "$JS" <<'NODE'
+const src = require("fs").readFileSync(process.argv[2], "utf8");
+const grab = (name) => {
+  const m = src.match(new RegExp("var " + name + " = (\\[[\\s\\S]*?\\]);"));
+  if (!m) { console.error("FAIL: " + name + " not declared as a literal list"); process.exit(1); }
+  return eval(m[1]);
+};
+const keys = grab("COMPONENT_KEYS"), order = grab("COMPONENT_ORDER");
+const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
+if (order.length !== keys.length || keys.some((k) => order.indexOf(k) < 0) ||
+    new Set(order).size !== order.length)
+  fail("COMPONENT_ORDER must name every component of COMPONENT_KEYS exactly once");
+const s = order.indexOf("synth");
+order.forEach((k, i) => {
+  if (k.startsWith("midi_fx") && i > s) fail("COMPONENT_ORDER must place " + k + " before synth (signal flow)");
+  if (/^fx\d/.test(k) && i < s) fail("COMPONENT_ORDER must place " + k + " after synth (signal flow)");
+});
+if (keys.filter((k) => /^fx\d$/.test(k)).length !== 8 || keys.filter((k) => /^midi_fx\d$/.test(k)).length !== 8)
+  fail("COMPONENT_KEYS must cover all 8 audio FX and all 8 MIDI FX positions");
+console.log("  component order: " + order.length + " components in signal flow");
+NODE
 
 uses="$(grep -c 'COMPONENT_ORDER\[k\]' "$JS" || true)"
 [ "$uses" -ge 2 ] || {

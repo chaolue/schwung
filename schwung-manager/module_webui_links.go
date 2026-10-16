@@ -37,13 +37,16 @@ type WebUILinks struct {
 // in tests.
 type paramGetter func(slot uint8, key string) (string, error)
 
-const webUIChainSlots = 4
+// webUIChainSlots is every chain slot, aux included (SHADOW_CHAIN_INSTANCES).
+const webUIChainSlots = remoteUISlots
 
-var webUIComponentLabels = map[string]string{
-	"synth":    "Synth",
-	"fx1":      "FX 1",
-	"fx2":      "FX 2",
-	"midi_fx1": "MIDI FX",
+// webUISlotLabel names a slot the way the Remote UI's tabs do: Move's four are
+// its tracks, the aux four have no track behind them.
+func webUISlotLabel(slot uint8) string {
+	if slot < 4 {
+		return fmt.Sprintf("Track %d", slot+1)
+	}
+	return fmt.Sprintf("Slot %d", slot+1)
 }
 
 // webUISearchScope says which positions a module of this component_type can
@@ -56,9 +59,9 @@ func webUISearchScope(componentType string) (comps []string, masterFx, tool bool
 	case "sound_generator":
 		return []string{"synth"}, false, false
 	case "audio_fx":
-		return []string{"fx1", "fx2"}, true, false
+		return componentsOfKind("fx"), true, false
 	case "midi_fx":
-		return []string{"midi_fx1"}, false, false
+		return componentsOfKind("midi_fx"), false, false
 	case "tool", "overtake":
 		return nil, false, true
 	}
@@ -90,27 +93,31 @@ func findModuleWebUILinks(get paramGetter, moduleID, componentType, baseURL stri
 		out.Links = append(out.Links, WebUILink{Where: where, URL: baseURL + "?" + query})
 	}
 
-	for slot := uint8(0); slot < webUIChainSlots; slot++ {
-		for _, comp := range comps {
-			v, ok := read(slot, comp+"_module")
-			if !ok {
+	// One read per slot (chain_modules) and one for Master FX, whatever the
+	// number of positions -- see chain_components.go.
+	if len(comps) > 0 {
+		for slot := uint8(0); slot < webUIChainSlots; slot++ {
+			mods, err := readSlotModules(get, slot)
+			if err != nil {
 				return unknown
 			}
-			if v != moduleID {
-				continue
+			for _, comp := range mods.orderedComponents() {
+				if mods[comp] != moduleID || !containsKey(comps, comp) {
+					continue
+				}
+				link(webUISlotLabel(slot)+" "+componentLabel(comp),
+					"component="+url.QueryEscape(comp)+
+						"&schwungStandalone=1&slot="+fmt.Sprint(slot))
 			}
-			link(fmt.Sprintf("Track %d %s", slot+1, webUIComponentLabels[comp]),
-				"component="+url.QueryEscape(comp)+
-					"&schwungStandalone=1&slot="+fmt.Sprint(slot))
 		}
 	}
 	if masterFx {
+		mods, err := readMasterFxModules(get)
+		if err != nil {
+			return unknown
+		}
 		for i, fx := range masterFxSlots {
-			v, ok := read(0, "master_fx:"+fx+":module")
-			if !ok {
-				return unknown
-			}
-			if masterFxModuleID(v) != moduleID {
+			if mods[fx] != moduleID {
 				continue
 			}
 			link(fmt.Sprintf("Master FX %d", i+1),

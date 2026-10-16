@@ -38,11 +38,36 @@ func (f *fakeParams) get(slot uint8, key string) (string, error) {
 	return "", errors.New("param get error: not served")
 }
 
+// chainMods is the chain's "chain_modules" answer for one slot.
+func chainMods(synth string, midi, fx []string) string {
+	q := func(xs []string) string {
+		out := make([]string, len(xs))
+		for i, x := range xs {
+			out[i] = `"` + x + `"`
+		}
+		return "[" + strings.Join(out, ",") + "]"
+	}
+	return `{"synth":"` + synth + `","midi_fx":` + q(midi) + `,"fx":` + q(fx) + `}`
+}
+
+// allSlots answers chain_modules for every slot: an empty chain unless given.
+func allSlots(given map[uint8]string) map[string]string {
+	vals := map[string]string{}
+	for slot := uint8(0); slot < webUIChainSlots; slot++ {
+		v, ok := given[slot]
+		if !ok {
+			v = chainMods("", nil, nil)
+		}
+		vals[fmt.Sprintf("%d/chain_modules", slot)] = v
+	}
+	return vals
+}
+
 func TestWebUILinksNameTheSlotTheSynthIsIn(t *testing.T) {
-	f := &fakeParams{vals: map[string]string{
-		"0/synth_module": "obxd", // Track 1 holds a DIFFERENT synth
-		"1/synth_module": "jvx",
-	}}
+	f := &fakeParams{vals: allSlots(map[uint8]string{
+		0: chainMods("obxd", nil, nil), // Track 1 holds a DIFFERENT synth
+		1: chainMods("jvx", nil, nil),
+	})}
 	got := findModuleWebUILinks(f.get, "jvx", "sound_generator", testWebUIBase)
 
 	if got.Unknown || !got.Present {
@@ -58,7 +83,8 @@ func TestWebUILinksNameTheSlotTheSynthIsIn(t *testing.T) {
 	if got.Links[0].Where != "Track 2 Synth" {
 		t.Errorf("Where = %q", got.Links[0].Where)
 	}
-	// A synth can only be in a synth position: no FX, master or tool reads.
+	// ONE read per slot, all eight, whatever the number of positions; a synth
+	// needs no master or tool reads.
 	if len(f.reads) != webUIChainSlots {
 		t.Errorf("made %d reads for a sound generator, want %d: %v",
 			len(f.reads), webUIChainSlots, f.reads)
@@ -66,16 +92,24 @@ func TestWebUILinksNameTheSlotTheSynthIsIn(t *testing.T) {
 }
 
 func TestWebUILinksCoverChainFXAndMasterFX(t *testing.T) {
-	f := &fakeParams{vals: map[string]string{
-		"2/fx2_module": "echo",
-		// Master FX answers a .so PATH, not an id (masterFxModuleID).
-		"0/master_fx:fx3:module": "/data/UserData/schwung/modules/audio_fx/echo/echo.so",
-	}}
+	vals := allSlots(map[uint8]string{
+		2: chainMods("obxd", nil, []string{"tape", "echo"}),
+		// An aux slot, in a position the Remote UI used not to know.
+		6: chainMods("", []string{"arp"}, []string{"a", "b", "c", "d", "e", "f", "g", "echo"}),
+	})
+	// Master FX answers a .so PATH, not an id (masterFxModuleID).
+	vals["0/master_fx:modules"] = `[{"id":"","path":""},{"id":"","path":""},` +
+		`{"id":"","path":"/data/UserData/schwung/modules/audio_fx/echo/echo.so"},` +
+		`{"id":"","path":""},{"id":"","path":""},{"id":"","path":""},{"id":"","path":""},` +
+		`{"id":"echo","path":"/x/echo/echo.so"}]`
+	f := &fakeParams{vals: vals}
 	got := findModuleWebUILinks(f.get, "echo", "audio_fx", testWebUIBase)
 
 	want := []WebUILink{
-		{Where: "Track 3 FX 2", URL: testWebUIBase + "?component=fx2&schwungStandalone=1&slot=2"},
+		{Where: "Track 3 Audio FX 2", URL: testWebUIBase + "?component=fx2&schwungStandalone=1&slot=2"},
+		{Where: "Slot 7 Audio FX 8", URL: testWebUIBase + "?component=fx8&schwungStandalone=1&slot=6"},
 		{Where: "Master FX 3", URL: testWebUIBase + "?component=master_fx%3Afx3&schwungStandalone=1&master_fx=1"},
+		{Where: "Master FX 8", URL: testWebUIBase + "?component=master_fx%3Afx8&schwungStandalone=1&master_fx=1"},
 	}
 	if len(got.Links) != len(want) {
 		t.Fatalf("got %+v, want %+v", got.Links, want)
@@ -84,6 +118,24 @@ func TestWebUILinksCoverChainFXAndMasterFX(t *testing.T) {
 		if got.Links[i] != want[i] {
 			t.Errorf("link %d = %+v, want %+v", i, got.Links[i], want[i])
 		}
+	}
+	if len(f.reads) != webUIChainSlots+1 {
+		t.Errorf("want one read per slot + one for Master FX, made %d: %v", len(f.reads), f.reads)
+	}
+}
+
+// An older chain serves no chain_modules: the positions are read one by one,
+// and still found.
+func TestWebUILinksOlderChainFallsBackPerPosition(t *testing.T) {
+	f := &fakeParams{vals: map[string]string{
+		"2/synth_module":  "obxd",
+		"2/fx_count":      "3",
+		"2/fx3_module":    "echo",
+		"2/midi_fx_count": "0",
+	}}
+	got := findModuleWebUILinks(f.get, "echo", "audio_fx", testWebUIBase)
+	if got.Unknown || len(got.Links) != 1 || got.Links[0].Where != "Track 3 Audio FX 3" {
+		t.Fatalf("got %+v, want Track 3 Audio FX 3", got)
 	}
 }
 
@@ -100,7 +152,7 @@ func TestWebUILinksFindARunningTool(t *testing.T) {
 
 // Loaded nowhere is a real answer: present, no links, not unknown.
 func TestWebUILinksLoadedNowhere(t *testing.T) {
-	f := &fakeParams{vals: map[string]string{"0/synth_module": "obxd"}}
+	f := &fakeParams{vals: allSlots(map[uint8]string{0: chainMods("obxd", nil, nil)})}
 	got := findModuleWebUILinks(f.get, "jvx", "sound_generator", testWebUIBase)
 	if got.Unknown || !got.Present || len(got.Links) != 0 {
 		t.Fatalf("got %+v, want present, known, no links", got)
@@ -111,8 +163,8 @@ func TestWebUILinksLoadedNowhere(t *testing.T) {
 // found -- because a partial list reads as the whole answer.
 func TestWebUILinksTimeoutIsUnknownNotNowhere(t *testing.T) {
 	f := &fakeParams{
-		vals: map[string]string{"0/synth_module": "jvx"},
-		fail: "2/synth_module",
+		vals: allSlots(map[uint8]string{0: chainMods("jvx", nil, nil)}),
+		fail: "2/chain_modules",
 	}
 	got := findModuleWebUILinks(f.get, "jvx", "sound_generator", testWebUIBase)
 	if !got.Unknown || len(got.Links) != 0 {
