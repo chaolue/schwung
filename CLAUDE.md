@@ -2000,6 +2000,12 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
   STALE list, and two renames overwrote other presets on a device. Library
   writes are a loader job (`SLOT_LOAD_KIND_IO`), never parked — they cost the
   callback ~14 ms each, an audible blip on every Save.
+- **The Mixer reads what a slot holds in ONE read.** The tabs walk a slot's
+  counts (`remote_ui_chain.go`, #669); the Mixer polls far more often, so it
+  reads the chain's `chain_modules` (and `<bus>:modules` for an FX bus)
+  instead. A timeout is an error, never "empty" (`chain_components.go`).
+  Mixer effect knobs come from
+  `capabilities.mixer_params`, else an EXACT `mix`/`dry_wet`/`wet` (guessed).
 
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's

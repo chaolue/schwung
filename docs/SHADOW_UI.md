@@ -2413,3 +2413,30 @@ is safe because the write touches only the instance's patch LIST, whose readers
 (`patch_count`, `patch_name_N`, `load_patch`) all arrive on the param channel,
 and the channel is held until the job is answered. shadow_ui waits up to 3 s for
 the answer (`writePatchLibrary`) rather than the default 100 ms.
+
+### The Mixer reads what a slot holds in one read
+
+The Remote UI's tabs see every chain position by walking a slot's counts
+(`synth_module`, `midi_fx_count`, `fx_count`, then the positions those name --
+`remote_ui_chain.go`, upstream #669). The Mixer polls much more often than a
+tab, and a walk per slot per poll would make it the busiest reader on the
+channel shadow_ui draws with. So for the Mixer what a slot holds is ONE read:
+the chain's `chain_modules` (`{"synth":..,"midi_fx":[..],"fx":[..]}`,
+`chain_modules_json.h`, refused rather than truncated -- a short list reads as
+"those positions are empty"), and an FX bus is its `<bus>:modules`. An older
+chain falls back to per-position reads only when the key is not served; a
+timeout is an error, never "empty" (`chain_components.go`). The module page's
+web UI links walk all eight slots.
+
+**The Mixer's effect knobs** (`remote_ui_mixer_fx.go`): each loaded audio FX
+gets one, on the parameter its module declares in `capabilities.mixer_params`,
+else the first EXACT `mix` / `dry_wet` / `wet` in its `chain_params`, marked
+guessed. Measured over the 40 fleet audio FX: 26 `mix`, 3 `wet`, 1 `dry_wet`,
+10 with no single mix — and `early_mix`, `noise_mix`, `carrier_mix`,
+`fx1_amount` are real parameters a substring match would have picked. Which
+effects a slot holds is re-read on subscribe, when the notify ring shows a
+module or chain-shape write on that slot, and in the one-read-a-second backstop
+rotation; a module's `chain_params` is read once per module id. A write is
+accepted only for a knob the Mixer is showing, within its range. The knob list
+is sent BEFORE values in every flush, because a value for a knob the browser
+has not been told about is dropped there.
