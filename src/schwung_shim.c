@@ -40,6 +40,7 @@
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
+#include "host/param_feed.h"
 #include "host/display_pull.h"
 #include "host/e16_claim.h"
 #include "host/cc_claim.h"
@@ -179,6 +180,7 @@ static shadow_ui_state_t *shadow_ui_state = NULL;
 static shadow_param_t *shadow_param = NULL;
 static web_param_set_ring_t *web_param_set_shm = NULL;       /* Web UI → shim param set ring */
 static web_param_notify_ring_t *web_param_notify_shm = NULL;  /* Shim → web UI param change ring */
+static param_feed_t *param_feed_shm = NULL;                  /* Shim → any reader: param change feed */
 static shadow_screenreader_t *shadow_screenreader_shm = NULL;  /* Forward declaration for D-Bus handler */
 static shadow_overlay_state_t *shadow_overlay_shm = NULL;     /* Overlay state for JS rendering */
 
@@ -4659,6 +4661,9 @@ static void init_shadow_shm(void)
     web_param_notify_shm = (web_param_notify_ring_t *)shadow_shm_map(SHM_WEB_PARAM_NOTIFY,
                                                                      sizeof(web_param_notify_ring_t), 1, 1);
 
+    /* Create/open the param change feed (shim → modules, never drained) */
+    param_feed_shm = (param_feed_t *)shadow_shm_map(SHM_PARAM_FEED, sizeof(param_feed_t), 1, 1);
+
     /* Create/open MIDI out shared memory (for shadow UI to send MIDI) */
     shadow_midi_out_shm = (shadow_midi_out_t *)shadow_shm_map(SHM_SHADOW_MIDI_OUT,
                                                               sizeof(shadow_midi_out_t), 1, 1);
@@ -5279,6 +5284,11 @@ void web_param_notify_push(uint8_t slot, const char *key, const char *value) {
     __sync_synchronize();
     web_param_notify_shm->write_idx = idx + 1;
     web_param_notify_shm->ready++;
+}
+
+/* The param change feed (param_feed.h): the same changes, for any reader. */
+static void param_feed_push_shim(uint8_t slot, const char *key, const char *value, uint8_t origin) {
+    param_feed_push(param_feed_shm, slot, key, value, origin);
 }
 
 /* Remote-UI push (F4): probe the loaded overtake DSP's cheap "rui_poll" digest
@@ -6048,6 +6058,7 @@ static void shim_init_subsystems(void)
             .get_bpm = shim_get_bpm,
             .get_beat_position = shadow_transport_beat_position,
             .on_param_changed = web_param_notify_push,
+            .on_param_feed = param_feed_push_shim,
             /* Tagged as EXT_SRC_CHAIN, not the overtake entry point: the chain
              * outlives an overtake module, so its packets must survive the
              * discard that overtake unload performs on the shared ring. */

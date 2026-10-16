@@ -2455,3 +2455,38 @@ read -- so the manager treats them as one thing with three prefixes
   on subscribe (`sendInitialParamValues`: a `continue` jumped the flush). Found
   by the first send test, whose module's last parameter had no value; it applied
   to every slot component too.
+
+### The param change feed: the notify ring's stream, for every reader
+
+A module learned about no parameter change it did not make. The browser did --
+every completed set reaches `on_param_changed`, which pushes it to the web
+notify ring -- but that ring has ONE reader: schwung-manager drains it by
+resetting `write_idx`, so a second reader would steal the browser's
+notifications. A module following a parameter (the Arranger's Perform knobs,
+mapped to chain parameters the Remote UI also drives) could only read it back,
+~2.8 ms a parameter, and so only every so often.
+
+`/schwung-param-feed` (`param_feed_t`, `src/host/param_feed.h`) carries the same
+stream to any number of readers and is never drained: a reader keeps its own
+sequence and asks for what came after (`shadow_param_changes()` in shadow_ui,
+a copy out of shared memory with no round trip).
+
+- **It is fed beside `on_param_changed`, by `on_param_feed`, at every site** --
+  the web set ring's success branches (all through `web_set_changed()`, so the
+  two cannot disagree) and `shadow_param_publish_response` for a SET. **It
+  carries the web UI's own sets too** (`req_id >= 0xFFFF0000`), which the notify
+  ring leaves out because the browser already knows: they are exactly the
+  changes a module needs. Refused sets (`error != 0`) are not changes.
+- **More than one writer is possible** (a worker can publish a deferred
+  response), so a writer RESERVES its sequence with an atomic add, marks the
+  entry 0 ("being written"), fills it and publishes the sequence. A reader that
+  meets an entry still at 0 or an older sequence STOPS and retries it next
+  read -- skipping it would report a change lost that is only late. A newer
+  sequence there means it was overwritten: lost, reported.
+- **128 entries, values to 95 bytes** (`truncated` flags a longer one -- a state
+  blob; read the parameter). A reader more than 128 behind is told `lost` and
+  gets the newest; it should re-read what it follows once.
+- **Not carried:** anything that never passes `set_param` -- a Schwung-mapped
+  hardware knob (`knob_forward_value`), modulation, a patch load's own state.
+- `tests/host/test_param_feed.c` runs it natively, including three writer
+  threads racing a reader: no torn or reordered change, every miss reported.

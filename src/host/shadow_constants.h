@@ -38,6 +38,7 @@
 #define SHM_DISPLAY_LIVE    "/schwung-display-live"    /* Live display for remote viewer */
 #define SHM_WEB_PARAM_SET   "/schwung-web-param-set"   /* Web UI → shim param set ring */
 #define SHM_WEB_PARAM_NOTIFY "/schwung-web-param-notify" /* Shim → web UI param change ring */
+#define SHM_PARAM_FEED      "/schwung-param-feed"      /* Shim → any reader: param change feed (param_feed.h) */
 
 /* ============================================================================
  * Audio Constants
@@ -1430,6 +1431,35 @@ typedef struct web_param_notify_ring_t {
     volatile uint8_t reserved[2];
     web_param_notify_entry_t entries[WEB_PARAM_NOTIFY_ENTRIES];
 } web_param_notify_ring_t;
+
+/*
+ * Param change feed — the web notify ring's stream for ANY number of readers
+ * (modules, tools, the shadow UI). Never drained: each reader keeps its own
+ * position. The discipline is in src/host/param_feed.h; touch it only there.
+ */
+#define PARAM_FEED_ENTRIES   128   /* power of two */
+#define PARAM_FEED_KEY_LEN   64
+#define PARAM_FEED_VALUE_LEN 96
+
+/* Where a change came from. */
+#define PARAM_ORIGIN_CHANNEL 1     /* the param channel: the shadow UI, modules, tools */
+#define PARAM_ORIGIN_WEB     2     /* the web UI (its set ring, or its param-channel sets) */
+
+typedef struct param_feed_entry_t {
+    uint32_t seq;                  /* 0 = being written; else its sequence */
+    uint8_t slot;
+    uint8_t origin;                /* PARAM_ORIGIN_* */
+    uint8_t truncated;
+    uint8_t reserved;
+    char key[PARAM_FEED_KEY_LEN];
+    char value[PARAM_FEED_VALUE_LEN];
+} param_feed_entry_t;
+
+typedef struct param_feed_t {
+    uint32_t head;                 /* the newest sequence handed out */
+    uint32_t reserved[3];
+    param_feed_entry_t entries[PARAM_FEED_ENTRIES];
+} param_feed_t;
 
 /*
  * Screen reader message structure.

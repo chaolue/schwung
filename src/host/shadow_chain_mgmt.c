@@ -4216,6 +4216,14 @@ static int send_bus_level_set(int send_idx, const char *param, const char *value
     return 1;
 }
 
+/* A web set landed: tell the browser (notify ring) and every other reader
+ * (the param feed). Every success branch below goes through here, so the two
+ * cannot disagree about what changed. */
+static void web_set_changed(uint8_t slot, const char *key, const char *value) {
+    if (host.on_param_changed) host.on_param_changed(slot, key, value);
+    if (host.on_param_feed) host.on_param_feed(slot, key, value, PARAM_ORIGIN_WEB);
+}
+
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
 
     /* Master FX params (web set-ring path). Web-originated sets arrive here via
@@ -4247,7 +4255,7 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
                 mfx_lfo_update_base_from_set_param(mfx_slot, param_key, value);
                 shadow_scene_bus_note_write(0, mfx_slot, param_key, value);
             }
-            if (host.on_param_changed) host.on_param_changed(slot, key, value);
+            web_set_changed(slot, key, value);
         }
         /* Unrecognized master_fx:* keys (lfo*, specials): don't misroute to the
          * chain-slot plugin below — leave for the shadow_param path. */
@@ -4301,7 +4309,7 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
                 } else {
                     return; /* an empty position: nothing took it, so nothing to tell */
                 }
-                if (host.on_param_changed) host.on_param_changed(slot, key, value);
+                web_set_changed(slot, key, value);
                 return;
             }
             if (send_bus_level_set(send_idx, send_param, value)) {
@@ -4310,7 +4318,7 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
                     ctrl->ui_flags_ext |= (uint16_t)(SHADOW_UI_FLAG_SEND_LEVELS_DIRTY >>
                                                      SHADOW_UI_FLAG_EXT_SHIFT);
                 }
-                if (host.on_param_changed) host.on_param_changed(slot, key, value);
+                web_set_changed(slot, key, value);
             }
             return;
         }
@@ -4318,7 +4326,7 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
 
     /* Try slot-level params first */
     if (shadow_handle_slot_param_set(slot, key, value)) {
-        if (host.on_param_changed) host.on_param_changed(slot, key, value);
+        web_set_changed(slot, key, value);
         return;
     }
 
@@ -4353,7 +4361,7 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
          * suppresses the write. */
         if (!shadow_lanes_plock_from_write(slot, key, value)) {
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, key, value);
-            if (host.on_param_changed) host.on_param_changed(slot, key, value);
+            web_set_changed(slot, key, value);
         }
     }
 }
@@ -4370,6 +4378,13 @@ int shadow_param_publish_response(uint32_t req_id) {
     if (param->request_type == 1 && host.on_param_changed &&
         req_id < 0xFFFF0000) {
         host.on_param_changed(param->slot, param->key, param->value);
+    }
+    /* The feed carries the web UI's sets too: a module following a parameter
+     * needs exactly the changes it did not make, and the browser's are most
+     * of them. Successful sets only -- a refused one changed nothing. */
+    if (param->request_type == 1 && host.on_param_feed && param->error == 0) {
+        host.on_param_feed(param->slot, param->key, param->value,
+                           req_id >= 0xFFFF0000 ? PARAM_ORIGIN_WEB : PARAM_ORIGIN_CHANNEL);
     }
 
     param->response_id = req_id;

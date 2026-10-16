@@ -691,6 +691,53 @@ That means:
   answer in channel order, and the browser then gets an older value after a
   newer one, which presents as a playhead jumping backwards.
 
+### Following a parameter changed elsewhere (`shadow_param_changes`)
+
+A module that shows or stores a chain parameter -- a performance knob mapped to
+a synth's cutoff, a controller page mirroring a mixer level -- learns about NO
+change it did not make: the Remote UI, the shadow UI's editors and other
+modules all write it without telling you. Reading it back is a ~2.8 ms round
+trip per parameter, which a module cannot afford often.
+
+`shadow_param_changes(since)` (shadow_ui hosts: overtake modules, tools) is the
+**param change feed**: every parameter set completed since sequence `since`,
+from any client, read straight out of shared memory -- no round trip, so ask
+every tick.
+
+```javascript
+let feedSeq = null;
+globalThis.tick = function () {
+    if (typeof shadow_param_changes !== "function") return;   // older Schwung: poll instead
+    const r = shadow_param_changes(feedSeq === null ? -1 : feedSeq);
+    if (!r) return;                                            // no feed segment
+    if (feedSeq === null) { feedSeq = r.seq; return; }         // start from now
+    feedSeq = r.seq;
+    if (r.lost) rereadEverythingIFollow();
+    for (const c of r.changes) {
+        // c.slot, c.key ("synth:cutoff", "fx1:mix", "slot:volume",
+        // "master_fx:fx2:feedback", "send1:return" ...), c.value (a string),
+        // c.origin ("web" | "channel"), c.truncated
+        if (c.slot === mySlot && c.key === "synth:cutoff") show(c.value);
+    }
+};
+```
+
+- **Your own writes are in it too** (origin `"channel"`, like the shadow UI's).
+  Compare against the value you hold rather than assuming every change is
+  someone else's.
+- **It is what was ASKED for**, not what the module stored: a module may clamp
+  or round. Compare as you display (a `0.55` written and a `0.5500` stored are
+  one position).
+- **Bus keys name their bus** (`master_fx:` / `send<N>:`), so match those by key;
+  the slot a client sent them at means nothing.
+- **Not in it:** writes that never pass through `set_param` -- a hardware knob
+  mapped by Schwung, LFO modulation, a patch load's internal state.
+- **`lost`**: you fell more than 128 changes behind, or one was overwritten as
+  you read. You get the newest ones; re-read what you follow once.
+- **`truncated`**: the value was longer than 95 bytes (a state blob). Read the
+  parameter itself.
+- A **null** answer means this Schwung has no feed; fall back to reading.
+
 ### Your effect on the Mixer (`mixer_params`)
 
 The Remote UI's **Mixer** tab gives every loaded audio FX a knob on its slot's

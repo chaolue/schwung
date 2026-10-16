@@ -1969,6 +1969,11 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
   `<comp>_module` reads per poll. A timeout is an error, never "empty"
   (`chain_components.go`). Mixer effect knobs come from
   `capabilities.mixer_params`, else an EXACT `mix`/`dry_wet`/`wet` (guessed).
+- **The param change feed** (`/schwung-param-feed`, `param_feed.h`; JS
+  `shadow_param_changes(since)`) is the notify ring's stream for ANY number of
+  readers -- the notify ring has one, the manager, which drains it. It carries
+  the web UI's own sets too, which the notify ring leaves out; it is how a
+  module follows a parameter changed elsewhere without a 2.8 ms read each.
 - **Mapped knobs are real knobs** (`knob_map`, one read), and a write to a
   mapped parameter moves the hardware knob's accumulator
   (`knob_sync_from_write`) — it used to change only on a turn, so editing the

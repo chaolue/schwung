@@ -105,6 +105,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_bus_mix \
 	$(BUILD_DIR)/test_bus_route \
 	$(BUILD_DIR)/test_send_fx_key \
+	$(BUILD_DIR)/test_param_feed \
 	$(BUILD_DIR)/test_fx_load_gate \
 	$(BUILD_DIR)/test_slot_load_job \
 	$(BUILD_DIR)/test_split_voices_parse \
@@ -306,6 +307,9 @@ $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../sr
 
 $(BUILD_DIR)/test_send_fx_key: test_send_fx_key.c ../../src/host/send_fx_key.h ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h ../../src/host/bus_mix.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SEND_BUSES=$(SEND_BUSES) -DTEST_SEND_FX_SLOTS=$(SEND_FX_SLOTS) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_param_feed: test_param_feed.c ../../src/host/param_feed.h ../../src/host/shadow_constants.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_ui_midi_out_ring: test_ui_midi_out_ring.c ../../src/host/ui_midi_out_ring.h ../../src/host/shadow_constants.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
