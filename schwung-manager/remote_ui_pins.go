@@ -15,11 +15,13 @@ import (
 // ---------------------------------------------------------------------------
 // Pinning a parameter to the Mixer.
 //
-// Any numeric knob on a Slot tab can be pinned; it then appears on that slot's
-// Mixer strip (under "Pinned"), drawn and written like the effect knobs. Pins
-// belong to the SET -- set_state/<uuid>/mixer_pins.json -- so they travel with
-// it, duplicates included (set_state_copy copies everything but an exclude
-// list), and a set switch brings that set's own.
+// Any numeric or choice knob on a Slot tab -- or on the Master FX / Send A/B
+// tabs -- can be pinned; it then appears on that slot's or bus's Mixer strip
+// (under "Pinned"), drawn and written like the effect knobs. Pins belong to the
+// SET -- set_state/<uuid>/mixer_pins.json -- so they travel with it, duplicates
+// included (set_state_copy copies everything but an exclude list), and a set
+// switch brings that set's own. A strip is named "0".."7" or by its bus id
+// ("master_fx", "send1", "send2"); see remote_ui_strips.go.
 //
 // A pin remembers the MODULE it was made on. If a different module now sits in
 // that position the pin is hidden, never pointed at an unrelated parameter that
@@ -35,8 +37,9 @@ type pinEntry struct {
 }
 
 type pinDoc struct {
-	Version int                   `json:"version"`
-	Slots   map[string][]pinEntry `json:"slots"`
+	Version int `json:"version"`
+	// Slots: strip name ("0".."7", "master_fx", "send1", "send2") -> pins.
+	Slots map[string][]pinEntry `json:"slots"`
 	// Offered: per slot, the "fxN|module" placements whose default mix pin has
 	// been added once. Unpinning it does not bring it back; a DIFFERENT module
 	// loaded in that position is new, and gets its own.
@@ -46,6 +49,7 @@ type pinDoc struct {
 type wsMixerPins struct {
 	Type string   `json:"type"` // "mixer_pins"
 	Slot uint8    `json:"slot"`
+	Bus  string   `json:"bus,omitempty"` // set for an FX bus's pins; Slot is then 0
 	Keys []string `json:"keys"`
 }
 
@@ -118,16 +122,16 @@ func writePins(basePath string, doc pinDoc) error {
 	return os.Rename(tmp, pinsPath(basePath, uuid))
 }
 
-// slotPins is one slot's pins in the active set (none on any error: a pin
+// slotPins is one strip's pins in the active set (none on any error: a pin
 // that cannot be read is simply not shown).
-func (ru *RemoteUI) slotPins(slot int) []pinEntry {
+func (ru *RemoteUI) slotPins(strip int) []pinEntry {
 	ru.pins.mu.Lock()
 	defer ru.pins.mu.Unlock()
 	doc, err := readPins(ru.basePath)
 	if err != nil {
 		return nil
 	}
-	return doc.Slots[strconv.Itoa(slot)]
+	return doc.Slots[stripName(strip)]
 }
 
 func pinKeys(pins []pinEntry) []string {
@@ -143,8 +147,28 @@ func (ru *RemoteUI) sendPins(ctx context.Context, c *ruClient, slot uint8) {
 	ru.writeJSONAsync(ctx, c, wsMixerPins{Type: "mixer_pins", Slot: slot, Keys: pinKeys(ru.slotPins(int(slot)))})
 }
 
-// broadcastPins tells every subscriber of slot (or of every slot, -1).
+// sendBusPins tells one bus-tab client which of the bus's keys are pinned.
+func (ru *RemoteUI) sendBusPins(ctx context.Context, c *ruClient, bus fxBus) {
+	ru.writeJSONAsync(ctx, c, wsMixerPins{Type: "mixer_pins", Bus: bus.ID,
+		Keys: pinKeys(ru.slotPins(busStrip(bus)))})
+}
+
+// broadcastPins tells every subscriber of a strip (or of every strip, -1).
 func (ru *RemoteUI) broadcastPins(ctx context.Context, slot int) {
+	for _, bus := range fxBuses {
+		strip := busStrip(bus)
+		if slot >= 0 && strip != slot {
+			continue
+		}
+		subs := ru.busSubscribedClients(bus.ID)
+		if len(subs) == 0 {
+			continue
+		}
+		msg := wsMixerPins{Type: "mixer_pins", Bus: bus.ID, Keys: pinKeys(ru.slotPins(strip))}
+		for _, c := range subs {
+			ru.writeJSONAsync(ctx, c, msg)
+		}
+	}
 	for s := uint8(0); s < remoteUISlots; s++ {
 		if slot >= 0 && int(s) != slot {
 			continue
@@ -160,16 +184,20 @@ func (ru *RemoteUI) broadcastPins(ctx context.Context, slot int) {
 	}
 }
 
-// handlePinMixer pins (value "1") or unpins ("0") key on a slot.
+// handlePinMixer pins (value "1") or unpins ("0") key on a strip: an FX bus's
+// when the key names one ("send1:fx1:mix"), else msg.Slot's.
 func (ru *RemoteUI) handlePinMixer(ctx context.Context, c *ruClient, msg wsMessage) {
 	fail := func(why string) { ru.sendError(ctx, c, "pin_mixer: "+why) }
-	if msg.Slot == nil || *msg.Slot >= remoteUISlots {
-		fail("needs a slot 0-" + strconv.Itoa(remoteUISlots-1))
-		return
+	strip, isBus := stripOfBusKey(msg.Key)
+	if !isBus {
+		if msg.Slot == nil || *msg.Slot >= remoteUISlots {
+			fail("needs a slot 0-" + strconv.Itoa(remoteUISlots-1))
+			return
+		}
+		strip = int(*msg.Slot)
 	}
-	slot := *msg.Slot
-	comp, param, ok := strings.Cut(msg.Key, ":")
-	if !ok || param == "" || !isChainComponent(comp) {
+	comp, param, ok := splitStripKey(strip, msg.Key)
+	if !ok {
 		fail("not a slot parameter: " + msg.Key)
 		return
 	}
@@ -184,7 +212,7 @@ func (ru *RemoteUI) handlePinMixer(ctx context.Context, c *ruClient, msg wsMessa
 		if !ru.requireShm(ctx, c) {
 			return
 		}
-		mods, err := readSlotModules(ru.blockingGetter(), slot)
+		mods, err := readStripModules(ru.blockingGetter(), strip)
 		if err != nil {
 			fail("could not read the slot: " + err.Error())
 			return
@@ -194,7 +222,7 @@ func (ru *RemoteUI) handlePinMixer(ctx context.Context, c *ruClient, msg wsMessa
 			fail("nothing is loaded in " + componentLabel(comp))
 			return
 		}
-		params, ok := ru.moduleParams(module, comp, slot, ru.blockingGetter())
+		params, ok := ru.moduleParams(module, stripComp(strip, comp), readSlotOf(strip), ru.blockingGetter())
 		if !ok {
 			fail("could not read " + module + "'s parameters")
 			return
@@ -208,7 +236,7 @@ func (ru *RemoteUI) handlePinMixer(ctx context.Context, c *ruClient, msg wsMessa
 	ru.pins.mu.Lock()
 	doc, err := readPins(ru.basePath)
 	if err == nil {
-		key := strconv.Itoa(int(slot))
+		key := stripName(strip)
 		list := doc.Slots[key][:0:0]
 		for _, p := range doc.Slots[key] {
 			if p.Key != msg.Key {
@@ -231,16 +259,16 @@ func (ru *RemoteUI) handlePinMixer(ctx context.Context, c *ruClient, msg wsMessa
 		fail("could not save: " + err.Error())
 		return
 	}
-	ru.logger.Info("ws pin_mixer", "slot", slot, "key", msg.Key, "pinned", pin)
-	ru.broadcastPins(ctx, int(slot))
+	ru.logger.Info("ws pin_mixer", "strip", stripName(strip), "key", msg.Key, "pinned", pin)
+	ru.broadcastPins(ctx, strip)
 	// The strip follows: the knob list is rebuilt from the pins.
-	ru.mixerScheduleModules(ctx, int(slot), 0)
+	ru.mixerScheduleModules(ctx, strip, 0)
 }
 
 // offerDefaultPins pins each newly seen effect's mix (its mixer_params, or the
 // guessed mix) once per placement. false: a read did not complete.
 func (ru *RemoteUI) offerDefaultPins(ctx context.Context, slot int, mods slotModules, get paramGetter) bool {
-	key := strconv.Itoa(slot)
+	key := stripName(slot)
 	ru.pins.mu.Lock()
 	doc, err := readPins(ru.basePath)
 	ru.pins.mu.Unlock()
@@ -262,7 +290,7 @@ func (ru *RemoteUI) offerDefaultPins(ctx context.Context, slot int, mods slotMod
 		if id == "" || offered[comp+"|"+id] {
 			continue
 		}
-		tmpl, ok := ru.mixerFxTemplates(id, comp, uint8(slot), get)
+		tmpl, ok := ru.mixerFxTemplates(id, stripComp(slot, comp), readSlotOf(slot), get)
 		if !ok {
 			return false
 		}
@@ -293,7 +321,7 @@ func (ru *RemoteUI) offerDefaultPins(ctx context.Context, slot int, mods slotMod
 		}
 		tags = append(kept, o.comp+"|"+o.id)
 		for _, t := range o.tmpl {
-			k := o.comp + ":" + t.param.Key
+			k := stripComp(slot, o.comp) + ":" + t.param.Key
 			dup := false
 			for _, p := range pins {
 				if p.Key == k && p.Module == o.id {

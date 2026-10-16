@@ -114,8 +114,8 @@ type ruClient struct {
 
 	// slots this client is subscribed to (slot index -> true)
 	subs map[uint8]bool
-	// whether this client is subscribed to master FX
-	masterFxSub bool
+	// the FX buses this client is viewing ("master_fx", "send1", "send2")
+	busSubs map[string]bool
 	// whether this client is subscribed to the active overtake tool's UI
 	toolSub bool
 	// whether this client is on the Mixer tab, and whether mixerLoop has sent
@@ -189,10 +189,13 @@ type wsSlotInfo struct {
 
 type wsMasterFxInfo struct {
 	Type string `json:"type"`
-	FX1  string `json:"fx1"`
-	FX2  string `json:"fx2"`
-	FX3  string `json:"fx3"`
-	FX4  string `json:"fx4"`
+	// Bus: which chain this is ("master_fx", "send1", "send2"). The message
+	// kept its name from when Master FX was the only one.
+	Bus string `json:"bus"`
+	FX1 string `json:"fx1"`
+	FX2 string `json:"fx2"`
+	FX3 string `json:"fx3"`
+	FX4 string `json:"fx4"`
 	// Modules is every loaded position ("fx1".."fx8") -> module id.
 	Modules map[string]string `json:"modules"`
 }
@@ -403,7 +406,7 @@ func (ru *RemoteUI) refreshLoop(ctx context.Context) {
 			continue
 		}
 
-		activeSlots, _ := ru.activeSlotsAndMasterFx()
+		activeSlots, _ := ru.activeSlotsAndBuses()
 		for _, slot := range activeSlots {
 			mods, err := readSlotModules(tryGetter(shm), slot)
 			if err != nil {
@@ -491,16 +494,20 @@ func (ru *RemoteUI) readLoop(ctx context.Context, c *ruClient) {
 		case "get_hierarchy":
 			ru.handleGetHierarchy(ctx, c, msg)
 		case "subscribe_master_fx":
-			ru.handleSubscribeMasterFx(ctx, c)
+			ru.handleSubscribeBus(ctx, c, masterFxBus.ID)
 		case "unsubscribe_master_fx":
-			ru.handleUnsubscribeMasterFx(c)
+			ru.handleUnsubscribeBus(c, masterFxBus.ID)
+		case "subscribe_bus":
+			ru.handleSubscribeBus(ctx, c, msg.Key)
+		case "unsubscribe_bus":
+			ru.handleUnsubscribeBus(c, msg.Key)
 		case "subscribe_tool":
 			ru.handleSubscribeTool(ctx, c)
 		case "unsubscribe_tool":
 			ru.handleUnsubscribeTool(c)
 		case "refetch_tool":
 			ru.handleRefetchTool(ctx, c)
-		case "set_master_fx_param":
+		case "set_master_fx_param", "set_bus_param":
 			ru.handleSetMasterFxParam(ctx, c, msg)
 		case "subscribe_mixer":
 			ru.handleSubscribeMixer(ctx, c)
@@ -675,16 +682,16 @@ func (ru *RemoteUI) sendInitialParamValues(ctx context.Context, c *ruClient, slo
 	fetched := 0
 
 	for i, p := range params {
-		if p.Key == "" {
-			continue
+		// A failed read (or a keyless entry) skips that value, never the flush
+		// below: when it was the LAST parameter, a `continue` here dropped the
+		// whole final batch.
+		if p.Key != "" {
+			fullKey := comp + ":" + p.Key
+			if val, err := ru.shm.GetParam(slot, fullKey); err == nil {
+				batch[fullKey] = val
+				fetched++
+			}
 		}
-		fullKey := comp + ":" + p.Key
-		val, err := ru.shm.GetParam(slot, fullKey)
-		if err != nil {
-			continue
-		}
-		batch[fullKey] = val
-		fetched++
 
 		// Send batch and yield
 		if len(batch) >= batchSize || i == len(params)-1 {
@@ -966,32 +973,42 @@ func (ru *RemoteUI) handleGetHierarchy(ctx context.Context, c *ruClient, msg wsM
 	}
 }
 
-func (ru *RemoteUI) handleSubscribeMasterFx(ctx context.Context, c *ruClient) {
+// handleSubscribeBus starts a client on one FX bus's tab: what is loaded,
+// then each position's panel, hierarchy, metadata and values.
+func (ru *RemoteUI) handleSubscribeBus(ctx context.Context, c *ruClient, id string) {
+	bus, ok := fxBusByID(id)
+	if !ok {
+		ru.sendError(ctx, c, "subscribe_bus: no bus "+strconv.Quote(id))
+		return
+	}
 	c.mu.Lock()
-	c.masterFxSub = true
+	if c.busSubs == nil {
+		c.busSubs = make(map[string]bool)
+	}
+	c.busSubs[bus.ID] = true
 	c.mu.Unlock()
 
-	ru.logger.Info("ws subscribe master_fx")
+	ru.logger.Info("ws subscribe bus", "bus", bus.ID)
 
 	if !ru.requireShm(ctx, c) {
 		return
 	}
 
-	// Send master FX info (which modules are loaded) -- one read, all eight.
-	mods, err := readMasterFxModules(ru.blockingGetter())
+	// What is loaded -- one read, all eight.
+	mods, err := readBusModules(ru.blockingGetter(), bus)
 	if err != nil {
 		mods = slotModules{}
 	}
-	ru.sendMasterFxInfoFrom(ctx, c, mods)
+	ru.writeJSON(ctx, c, busInfoMessage(bus, mods))
 
-	// Send hierarchy and chain_params for each loaded master FX slot.
+	// Hierarchy and chain_params for each loaded position.
 	for _, fxSlot := range masterFxSlots {
 		modID := mods[fxSlot]
 		if modID == "" {
 			continue
 		}
-		compName := "master_fx:" + fxSlot
-		// A Master FX position is an ordinary audio FX module in a different
+		compName := bus.ID + ":" + fxSlot
+		// A bus position is an ordinary audio FX module in a different
 		// place, so it may ship a web_ui.html exactly as it does in a chain
 		// slot — findModuleWebUI already searches audio_fx. Only this send was
 		// missing, which is why the same module offered its panel on a track
@@ -1003,13 +1020,15 @@ func (ru *RemoteUI) handleSubscribeMasterFx(ctx context.Context, c *ruClient) {
 		ru.sendChainParams(ctx, c, 0, compName)
 		ru.sendInitialParamValues(ctx, c, 0, compName)
 	}
+	// Which of its parameters are pinned to the Mixer.
+	ru.sendBusPins(ctx, c, bus)
 }
 
-func (ru *RemoteUI) handleUnsubscribeMasterFx(c *ruClient) {
+func (ru *RemoteUI) handleUnsubscribeBus(c *ruClient, id string) {
 	c.mu.Lock()
-	c.masterFxSub = false
+	delete(c.busSubs, id)
 	c.mu.Unlock()
-	ru.logger.Info("ws unsubscribe master_fx")
+	ru.logger.Info("ws unsubscribe bus", "bus", id)
 }
 
 // handleSubscribeTool serves the active overtake tool's remote UI. An overtake
@@ -1475,7 +1494,16 @@ func (ru *RemoteUI) handleSetMasterFxParam(ctx context.Context, c *ruClient, msg
 		ru.sendError(ctx, c, "set_master_fx_param requires key")
 		return
 	}
-	// All master FX params go through slot 0.
+	// A send bus's POSITION parameters only: its levels are the Mixer's, and
+	// what is loaded is the device's to change. Master FX keys pass as they
+	// always have.
+	if !strings.HasPrefix(msg.Key, masterFxBus.ID+":") {
+		if _, _, param, ok := splitBusKey(msg.Key); !ok || param == "module" {
+			ru.sendError(ctx, c, "set_master_fx_param: not an FX bus parameter: "+msg.Key)
+			return
+		}
+	}
+	// Every bus parameter goes through slot 0.
 	if err := ru.setParam(0, msg.Key, msg.Value); err != nil {
 		ru.logger.Error("set_master_fx_param failed", "key", msg.Key, "err", err)
 		ru.sendError(ctx, c, "set_master_fx_param failed: "+err.Error())
@@ -1549,16 +1577,16 @@ func masterFxModuleID(v string) string {
 }
 
 func masterFxInfoMessage(mods slotModules) wsMasterFxInfo {
+	return busInfoMessage(masterFxBus, mods)
+}
+
+func busInfoMessage(bus fxBus, mods slotModules) wsMasterFxInfo {
 	m := make(map[string]string, len(mods))
 	for k, v := range mods {
 		m[k] = v
 	}
-	return wsMasterFxInfo{Type: "master_fx_info", FX1: mods["fx1"], FX2: mods["fx2"],
+	return wsMasterFxInfo{Type: "master_fx_info", Bus: bus.ID, FX1: mods["fx1"], FX2: mods["fx2"],
 		FX3: mods["fx3"], FX4: mods["fx4"], Modules: m}
-}
-
-func (ru *RemoteUI) sendMasterFxInfoFrom(ctx context.Context, c *ruClient, mods slotModules) {
-	ru.writeJSON(ctx, c, masterFxInfoMessage(mods))
 }
 
 func (ru *RemoteUI) sendHierarchy(ctx context.Context, c *ruClient, slot uint8, component string) {
@@ -1696,9 +1724,10 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 	lastResend := make(map[uint8]time.Time)
 	pendingResend := make(map[uint8]map[string]bool) // slot -> comp -> needs full re-send
 	lastPreset := make(map[uint8]map[string]string)  // slot -> comp -> last preset value seen
-	// Master FX lives at slot 0 but is delivered to a separate subscription
-	// (masterFxSub), so it gets its own pending set + throttle keyed by comp
-	// ("master_fx:fxN") rather than sharing the chain-slot maps above.
+	// The FX buses (Master FX, Send A/B) live at slot 0 but are delivered to
+	// their own subscriptions (busSubs), so they get their own pending set +
+	// throttle keyed by comp ("master_fx:fxN", "send1:fxN") rather than
+	// sharing the chain-slot maps above.
 	var lastResendMasterFx time.Time
 	pendingMasterFxResend := make(map[string]bool) // comp -> needs full re-send
 	// A change to ANY of a component's params can move its derived viz.extra
@@ -1734,11 +1763,11 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 		ru.mu.Unlock()
 
 		if len(changes) > 0 {
-			// Group changes by slot, splitting master FX keys (slot 0,
-			// "master_fx:" prefix) into their own bucket so master-FX-only
-			// subscribers receive them without needing a slot 0 subscription.
+			// Group changes by slot, splitting FX bus keys (slot 0,
+			// "master_fx:" / "send<N>:fx<M>:") into a bucket per bus so a
+			// bus tab receives them without needing a slot 0 subscription.
 			slotChanges := make(map[uint8]map[string]string)
-			masterFxChanges := make(map[string]string)
+			busChanges := make(map[string]map[string]string) // bus -> key -> value
 			for _, c := range changes {
 				// The Mixer takes what it needs from every change first; it
 				// keys on the param name alone, so this costs a few string
@@ -1770,11 +1799,14 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 					}
 					continue
 				}
-				if c.Slot == 0 && strings.HasPrefix(c.Key, "master_fx:") {
-					masterFxChanges[c.Key] = c.Value
-					// A device-initiated master-FX preset load reshuffles every
-					// param internally; the notify ring carries only the index,
-					// so mark the comp ("master_fx:fxN") for a full re-send.
+				if busID := notifyBusOf(c.Slot, c.Key); busID != "" {
+					if busChanges[busID] == nil {
+						busChanges[busID] = make(map[string]string)
+					}
+					busChanges[busID][c.Key] = c.Value
+					// A device-initiated preset load reshuffles every param
+					// internally; the notify ring carries only the index, so
+					// mark the comp ("master_fx:fxN") for a full re-send.
 					if i := strings.LastIndex(c.Key, ":"); i >= 0 && c.Key[i+1:] == "preset" {
 						pendingMasterFxResend[c.Key[:i]] = true
 					}
@@ -1830,11 +1862,11 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 				}
 			}
 
-			if len(masterFxChanges) > 0 {
-				update := wsParamUpdate{Type: "param_update", Slot: 0, Params: masterFxChanges}
+			for busID, params := range busChanges {
+				update := wsParamUpdate{Type: "param_update", Slot: 0, Params: params}
 				for _, c := range clients {
 					c.mu.Lock()
-					subscribed := c.masterFxSub
+					subscribed := c.busSubs[busID]
 					c.mu.Unlock()
 					if subscribed {
 						ru.writeJSONTry(ctx, c, update)
@@ -1907,8 +1939,8 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 			}
 		}
 
-		// Same treatment for master-FX preset changes, delivered to the
-		// separate master-FX subscription and throttled independently.
+		// Same treatment for an FX bus's preset changes, delivered to that
+		// bus's subscription and throttled independently.
 		if len(pendingMasterFxResend) > 0 {
 			now := time.Now()
 			if now.Sub(lastResendMasterFx) >= presetResendThrottle {
@@ -1920,7 +1952,8 @@ func (ru *RemoteUI) notifyLoop(ctx context.Context) {
 				pendingMasterFxResend = make(map[string]bool)
 				go func(comps []string) {
 					for _, comp := range comps {
-						for _, c := range ru.masterFxSubscribedClients() {
+						busID, _, _ := strings.Cut(comp, ":")
+						for _, c := range ru.busSubscribedClients(busID) {
 							ru.sendInitialParamValues(ctx, c, 0, comp)
 						}
 					}
@@ -1949,8 +1982,8 @@ func (ru *RemoteUI) pollLoop(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	caches := make(map[uint8]*slotCache) // slot -> cache
-	var masterFxCache *slotCache
+	caches := make(map[uint8]*slotCache)     // slot -> cache
+	busCaches := make(map[string]*slotCache) // FX bus -> cache
 
 	for {
 		select {
@@ -1965,7 +1998,7 @@ func (ru *RemoteUI) pollLoop(ctx context.Context) {
 		}
 
 		// Determine which slots have at least one subscriber.
-		activeSlots, hasMasterFxSubs := ru.activeSlotsAndMasterFx()
+		activeSlots, activeBuses := ru.activeSlotsAndBuses()
 
 		for _, slot := range activeSlots {
 			cache, ok := caches[slot]
@@ -1980,34 +2013,38 @@ func (ru *RemoteUI) pollLoop(ctx context.Context) {
 			ru.pollSlot(ctx, slot, cache)
 		}
 
-		if hasMasterFxSubs {
-			if masterFxCache == nil {
-				masterFxCache = &slotCache{
+		for _, bus := range activeBuses {
+			cache := busCaches[bus.ID]
+			if cache == nil {
+				cache = &slotCache{
 					params:      make(map[string]string),
 					hierarchies: make(map[string]string),
 					modules:     make(map[string]string),
 				}
+				busCaches[bus.ID] = cache
 			}
-			ru.pollMasterFx(ctx, masterFxCache)
+			ru.pollBus(ctx, bus, cache)
 		}
 	}
 }
 
-// activeSlotsAndMasterFx returns a deduplicated list of slots with subscribers
-// and whether any client is subscribed to master FX.
-func (ru *RemoteUI) activeSlotsAndMasterFx() ([]uint8, bool) {
+// activeSlotsAndBuses returns a deduplicated list of slots with subscribers
+// and the FX buses any client is viewing.
+func (ru *RemoteUI) activeSlotsAndBuses() ([]uint8, []fxBus) {
 	ru.mu.Lock()
 	defer ru.mu.Unlock()
 
 	seen := make(map[uint8]bool)
-	hasMasterFx := false
+	busSeen := make(map[string]bool)
 	for c := range ru.clients {
 		c.mu.Lock()
 		for s := range c.subs {
 			seen[s] = true
 		}
-		if c.masterFxSub {
-			hasMasterFx = true
+		for b, on := range c.busSubs {
+			if on {
+				busSeen[b] = true
+			}
 		}
 		c.mu.Unlock()
 	}
@@ -2016,7 +2053,29 @@ func (ru *RemoteUI) activeSlotsAndMasterFx() ([]uint8, bool) {
 	for s := range seen {
 		slots = append(slots, s)
 	}
-	return slots, hasMasterFx
+	var buses []fxBus
+	for _, b := range fxBuses {
+		if busSeen[b.ID] {
+			buses = append(buses, b)
+		}
+	}
+	return slots, buses
+}
+
+// notifyBusOf: the FX bus a notified change belongs to, or "". Every
+// "master_fx:" key goes to Master FX's tab, as it always has; for a send only
+// a POSITION's key does -- its levels ("send1:return") are the Mixer's.
+func notifyBusOf(slot uint8, key string) string {
+	if slot != 0 {
+		return ""
+	}
+	if strings.HasPrefix(key, masterFxBus.ID+":") {
+		return masterFxBus.ID
+	}
+	if bus, _, _, ok := splitBusKey(key); ok {
+		return bus.ID
+	}
+	return ""
 }
 
 // chainParam is the minimal structure we parse from chain_params JSON.
@@ -2522,10 +2581,10 @@ func (ru *RemoteUI) broadcastChainParams(ctx context.Context, slot uint8, compon
 	}
 }
 
-// pollMasterFx checks for module/hierarchy changes only (no per-param
-// polling). What is loaded is ONE read (master_fx:modules) for all eight.
-func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
-	mods, err := readMasterFxModules(tryGetter(ru.shm))
+// pollBus checks one FX bus for module/hierarchy changes only (no per-param
+// polling). What is loaded is ONE read ("<bus>:modules") for all eight.
+func (ru *RemoteUI) pollBus(ctx context.Context, bus fxBus, cache *slotCache) {
+	mods, err := readBusModules(tryGetter(ru.shm), bus)
 	if err != nil {
 		// Busy or a transient read error: skip the tick. Mistaking it for
 		// "nothing loaded" broadcast an empty chain and restored it the next
@@ -2534,7 +2593,7 @@ func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 	}
 	changed := false
 	for _, fxSlot := range masterFxSlots {
-		compName := "master_fx:" + fxSlot
+		compName := bus.ID + ":" + fxSlot
 		modID := mods[fxSlot]
 		prev, seen := cache.modules[fxSlot]
 		if seen && prev == modID {
@@ -2554,67 +2613,53 @@ func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 			// loses one is handled client-side, which clears the panel on the
 			// master_fx_info below.
 			if url := ru.findModuleWebUI(modID); url != "" {
-				ru.broadcastMasterFxCustomUI(ctx, compName, url)
+				for _, c := range ru.busSubscribedClients(bus.ID) {
+					ru.sendCustomUI(ctx, c, 0, compName, url)
+				}
 			}
-			ru.broadcastMasterFxHierarchy(ctx, compName)
-			ru.broadcastMasterFxChainParams(ctx, compName)
+			ru.broadcastBusHierarchy(ctx, bus, compName)
+			for _, c := range ru.busSubscribedClients(bus.ID) {
+				ru.sendChainParams(ctx, c, 0, compName)
+			}
 		}
 	}
 	if changed {
-		ru.broadcastMasterFxInfoFrom(ctx, mods)
+		msg := busInfoMessage(bus, mods)
+		for _, c := range ru.busSubscribedClients(bus.ID) {
+			ru.writeJSON(ctx, c, msg)
+		}
 	}
 	for _, fxSlot := range masterFxSlots {
 		if mods[fxSlot] == "" {
 			continue
 		}
-		compName := "master_fx:" + fxSlot
+		compName := bus.ID + ":" + fxSlot
 		hierJSON, ok, _ := ru.shm.TryGetParam(0, compName+":ui_hierarchy")
 		if ok && hierJSON != "" {
 			if prev, exists := cache.hierarchies[fxSlot]; !exists || prev != hierJSON {
 				cache.hierarchies[fxSlot] = hierJSON
-				ru.broadcastMasterFxHierarchy(ctx, compName)
+				ru.broadcastBusHierarchy(ctx, bus, compName)
 			}
 		}
 	}
 }
 
-func (ru *RemoteUI) broadcastMasterFxInfoFrom(ctx context.Context, mods slotModules) {
-	msg := masterFxInfoMessage(mods)
-	for _, c := range ru.masterFxSubscribedClients() {
-		ru.writeJSON(ctx, c, msg)
-	}
-}
-
-// broadcastMasterFxCustomUI tells every Master FX subscriber that a position
-// now has a custom panel. Separate from broadcastCustomUI, which addresses
-// slot subscribers: a client can be on the Master FX tab without being
-// subscribed to any chain slot.
-func (ru *RemoteUI) broadcastMasterFxCustomUI(ctx context.Context, compName, url string) {
-	for _, c := range ru.masterFxSubscribedClients() {
-		ru.sendCustomUI(ctx, c, 0, compName, url)
-	}
-}
-
-func (ru *RemoteUI) broadcastMasterFxHierarchy(ctx context.Context, compName string) {
-	for _, c := range ru.masterFxSubscribedClients() {
+func (ru *RemoteUI) broadcastBusHierarchy(ctx context.Context, bus fxBus, compName string) {
+	for _, c := range ru.busSubscribedClients(bus.ID) {
 		ru.sendHierarchy(ctx, c, 0, compName)
 	}
 }
 
-func (ru *RemoteUI) broadcastMasterFxChainParams(ctx context.Context, compName string) {
-	for _, c := range ru.masterFxSubscribedClients() {
-		ru.sendChainParams(ctx, c, 0, compName)
-	}
-}
-
-// masterFxSubscribedClients returns all clients subscribed to master FX.
-func (ru *RemoteUI) masterFxSubscribedClients() []*ruClient {
+// busSubscribedClients returns every client viewing one FX bus. Separate from
+// subscribedClients, which addresses slot subscribers: a client can be on a
+// bus tab without being subscribed to any chain slot.
+func (ru *RemoteUI) busSubscribedClients(busID string) []*ruClient {
 	ru.mu.Lock()
 	defer ru.mu.Unlock()
 	var out []*ruClient
 	for c := range ru.clients {
 		c.mu.Lock()
-		sub := c.masterFxSub
+		sub := c.busSubs[busID]
 		c.mu.Unlock()
 		if sub {
 			out = append(out, c)

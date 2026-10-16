@@ -25,13 +25,15 @@
         COMPONENT_LABELS["midi_fx" + cl] = "MIDI FX " + cl;
     }
 
-    // Every Master FX position (MASTER_FX_SLOTS).
-    var MASTER_FX_KEYS = [];
-    var MASTER_FX_LABELS = {};
-    for (var ml = 1; ml <= 8; ml++) {
-        MASTER_FX_KEYS.push("master_fx:fx" + ml);
-        MASTER_FX_LABELS["master_fx:fx" + ml] = "Master FX " + ml;
-    }
+    // The three FX BUSES: Master FX and the two sends. One shape to the shim
+    // -- eight positions (MASTER_FX_SLOTS), keys "<bus>:fx<N>:<param>" on slot
+    // 0 -- so one tab renderer with three prefixes. `tab` is the activeSlot
+    // value (Master FX's predates the sends), `id` the shim's prefix.
+    var FX_BUSES = [
+        { tab: "master", id: "master_fx", label: "Master FX", hash: "master-fx" },
+        { tab: "send1", id: "send1", label: "Send A", hash: "send-a" },
+        { tab: "send2", id: "send2", label: "Send B", hash: "send-b" }
+    ];
 
     function makeComponent() {
         return { hierarchy: null, chainParams: null, params: {}, navStack: ["root"], module: "" };
@@ -74,17 +76,46 @@
     var slots = [];
     for (var si = 0; si < SLOT_COUNT; si++) slots.push(makeSlot());
 
-    // Master FX state.
-    var masterFx = {
-        components: makeComponents(MASTER_FX_KEYS),
-        collapsed: {},
-        // Keyed by component, exactly as a slot's is: two Master FX positions
-        // can each ship a panel and must not collide.
-        customUI: {},
-        // The same Custom/Default escape hatch a slot has, so a custom panel
-        // can never make a Master FX parameter unreachable.
-        useDefaultUI: false
-    };
+    // Per-bus state, keyed by tab.
+    function makeBus(def) {
+        var keys = [], labels = {};
+        for (var n = 1; n <= 8; n++) {
+            keys.push(def.id + ":fx" + n);
+            labels[def.id + ":fx" + n] = def.label + (def.tab === "master" ? " " : " FX ") + n;
+        }
+        return {
+            def: def,
+            keys: keys,
+            labels: labels,
+            components: makeComponents(keys),
+            collapsed: {},
+            // Keyed by component, exactly as a slot's is: two positions on one
+            // bus can each ship a panel and must not collide.
+            customUI: {},
+            // The same Custom/Default escape hatch a slot has, so a custom panel
+            // can never make a bus parameter unreachable.
+            useDefaultUI: false,
+            // Keys pinned to the Mixer ("send1:fx1:mix"), from mixer_pins.
+            pins: []
+        };
+    }
+    var buses = {};
+    for (var bi = 0; bi < FX_BUSES.length; bi++) buses[FX_BUSES[bi].tab] = makeBus(FX_BUSES[bi]);
+
+    function isBusTab(v) { return typeof v === "string" && Object.prototype.hasOwnProperty.call(buses, v); }
+    function busById(id) {
+        for (var i = 0; i < FX_BUSES.length; i++) if (FX_BUSES[i].id === id) return buses[FX_BUSES[i].tab];
+        return null;
+    }
+    /** The bus whose position a key or component names ("send1:fx2:mix", "master_fx:fx1"). */
+    function busOfKey(key) {
+        for (var i = 0; i < FX_BUSES.length; i++) {
+            if (key.indexOf(FX_BUSES[i].id + ":fx") === 0) return buses[FX_BUSES[i].tab];
+        }
+        // Every other master_fx: key belongs to its tab too, as it always has.
+        if (key.indexOf("master_fx:") === 0) return buses.master;
+        return null;
+    }
 
     // Active overtake-tool state. A tool is not a chain slot; its
     // params live under the "overtake_dsp:" prefix and its UI shows in the Tool
@@ -99,14 +130,15 @@
     var mixer = window.SchwungMixer ? window.SchwungMixer.create({ send: function (m) { send(m); } }) : null;
 
     // Tabs that are not a chain slot index.
-    function isNamedTab(v) { return v === "master" || v === "tool" || v === "mixer"; }
+    function isNamedTab(v) { return isBusTab(v) || v === "tool" || v === "mixer"; }
 
-    // Read initial slot from URL hash (#slot1 .. #slot8, #master-fx, #tool, #mixer)
+    // Read initial slot from URL hash (#slot1 .. #slot8, #master-fx, #send-a,
+    // #send-b, #tool, #mixer)
     var initialSlot = 0;
     (function() {
         var h = location.hash.replace("#", "");
-        if (h === "master-fx") initialSlot = "master";
-        else if (h === "tool") initialSlot = "tool";
+        for (var i = 0; i < FX_BUSES.length; i++) if (h === FX_BUSES[i].hash) initialSlot = FX_BUSES[i].tab;
+        if (h === "tool") initialSlot = "tool";
         else if (h === "mixer") initialSlot = "mixer";
         else if (/^slot[1-8]$/.test(h)) initialSlot = parseInt(h.charAt(4), 10) - 1;
     })();
@@ -204,8 +236,8 @@
     }
 
     function subscribe(slot) {
-        if (slot === "master") {
-            send({ type: "subscribe_master_fx" });
+        if (isBusTab(slot)) {
+            send({ type: "subscribe_bus", key: buses[slot].def.id });
         } else if (slot === "mixer") {
             send({ type: "subscribe_mixer" });
         } else if (slot === "tool") {
@@ -216,8 +248,8 @@
     }
 
     function unsubscribe(slot) {
-        if (slot === "master") {
-            send({ type: "unsubscribe_master_fx" });
+        if (isBusTab(slot)) {
+            send({ type: "unsubscribe_bus", key: buses[slot].def.id });
         } else if (slot === "mixer") {
             send({ type: "unsubscribe_mixer" });
             if (mixer) mixer.reset();
@@ -235,7 +267,7 @@
     function dispatch(msg) {
         switch (msg.type) {
             case "master_fx_info":
-                handleMasterFxInfo(msg);
+                handleBusInfo(msg);
                 return;
             case "tool_info":
                 handleToolInfo(msg);
@@ -278,34 +310,45 @@
             }
         }
 
-        // Check if this is a master FX message (slot 0 with master_fx: component prefix).
-        if (comp.indexOf("master_fx:") === 0) {
+        // An FX bus position's message (slot 0, "<bus>:fxN" component).
+        var compBus = comp ? busOfKey(comp) : null;
+        if (compBus) {
             switch (msg.type) {
                 case "hierarchy":
-                    handleMasterFxHierarchy(comp, msg);
+                    handleBusHierarchy(compBus, comp, msg);
                     break;
                 case "chain_params":
-                    handleMasterFxChainParams(comp, msg);
+                    handleBusChainParams(compBus, comp, msg);
                     break;
                 case "custom_ui":
-                    handleMasterFxCustomUI(comp, msg);
+                    handleBusCustomUI(compBus, comp, msg);
                     break;
             }
             return;
         }
 
-        // Check if this is a param_update with master_fx keys.
+        // A param_update carrying FX bus keys.
         if (msg.type === "param_update" && msg.params) {
-            var hasMasterFx = false;
+            var hasBus = false;
             var hasSlot = false;
             for (var k in msg.params) {
-                if (k.indexOf("master_fx:") === 0) hasMasterFx = true;
+                if (busOfKey(k)) hasBus = true;
                 else hasSlot = true;
             }
-            if (hasMasterFx) {
-                handleMasterFxParamUpdate(msg);
+            if (hasBus) {
+                handleBusParamUpdate(msg);
             }
             if (!hasSlot) return;
+        }
+
+        // An FX bus's Mixer pins.
+        if (msg.type === "mixer_pins" && msg.bus) {
+            var pinBus = busById(msg.bus);
+            if (pinBus) {
+                pinBus.pins = msg.keys || [];
+                if (buses[activeSlot] === pinBus) refreshPinButtons();
+            }
+            return;
         }
 
         if (slot < 0 || slot >= SLOT_COUNT) return;
@@ -521,37 +564,39 @@
     }
 
     // ------------------------------------------------------------------
-    // Master FX message handlers
+    // FX bus message handlers (Master FX, Send A, Send B)
     // ------------------------------------------------------------------
 
-    function handleMasterFxInfo(msg) {
+    function handleBusInfo(msg) {
+        var bus = busById(msg.bus || "master_fx");
+        if (!bus) return;
         // `modules` is keyed "fx1".."fx8"; an older server sent fx1..fx4.
         var given = msg.modules || { fx1: msg.fx1, fx2: msg.fx2, fx3: msg.fx3, fx4: msg.fx4 };
-        for (var i = 0; i < MASTER_FX_KEYS.length; i++) {
-            var ck = MASTER_FX_KEYS[i];
-            var mod = given[ck.slice("master_fx:".length)] || "";
-            if (masterFx.components[ck].module !== mod) {
-                masterFx.components[ck].module = mod;
+        for (var i = 0; i < bus.keys.length; i++) {
+            var ck = bus.keys[i];
+            var mod = given[ck.slice(bus.def.id.length + 1)] || "";
+            if (bus.components[ck].module !== mod) {
+                bus.components[ck].module = mod;
                 // The panel belonged to the module that just left. Dropping it
                 // here is what makes a REMOVED module lose its iframe: the
                 // server only sends custom_ui for a module that has one, so
                 // nothing would otherwise clear it and the old panel would
                 // keep addressing a position holding something else.
-                delete masterFx.customUI[ck];
+                delete bus.customUI[ck];
             }
         }
-        if (activeSlot === "master") renderSlot();
+        if (buses[activeSlot] === bus) renderSlot();
     }
 
-    function handleMasterFxCustomUI(comp, msg) {
+    function handleBusCustomUI(bus, comp, msg) {
         var url = msg.url || "";
-        if (masterFx.customUI[comp] === url) return;  // avoid reloading a live iframe
-        masterFx.customUI[comp] = url;
-        if (activeSlot === "master") renderSlot();
+        if (bus.customUI[comp] === url) return;  // avoid reloading a live iframe
+        bus.customUI[comp] = url;
+        if (buses[activeSlot] === bus) renderSlot();
     }
 
-    function handleMasterFxHierarchy(comp, msg) {
-        var c = masterFx.components[comp];
+    function handleBusHierarchy(bus, comp, msg) {
+        var c = bus.components[comp];
         if (!c) return;
         var sameStructure = c.hierarchy &&
             hierarchyStructureKey(c.hierarchy) === hierarchyStructureKey(msg.data);
@@ -560,37 +605,38 @@
         /* Value-only churn (structure unchanged): skip the re-render to avoid
          * periodic flicker; values update via the notify path. */
         if (sameStructure) return;
-        if (activeSlot === "master") renderSlot();
+        if (buses[activeSlot] === bus) renderSlot();
     }
 
-    function handleMasterFxChainParams(comp, msg) {
-        var c = masterFx.components[comp];
+    function handleBusChainParams(bus, comp, msg) {
+        var c = bus.components[comp];
         if (!c) return;
         c.chainParams = msg.data;
-        if (activeSlot === "master") renderSlot();
+        if (buses[activeSlot] === bus) renderSlot();
     }
 
-    function handleMasterFxParamUpdate(msg) {
+    function handleBusParamUpdate(msg) {
         if (!msg.params) return;
         for (var fullKey in msg.params) {
-            // fullKey is like "master_fx:fx1:cutoff"
-            var parts = splitMasterFxPrefix(fullKey);
+            // fullKey is like "master_fx:fx1:cutoff" or "send1:fx2:mix"
+            var parts = splitBusKey(fullKey);
             if (parts) {
-                var comp = masterFx.components[parts.comp];
+                var comp = parts.bus.components[parts.comp];
                 if (comp) {
                     comp.params[fullKey] = msg.params[fullKey];
                 }
             }
         }
-        if (activeSlot === "master") {
-            updateMasterFxParamValues(msg.params);
+        var active = buses[activeSlot];
+        if (active) {
+            updateBusParamValues(msg.params);
             // ...and to any custom panels. Grouped by position rather than
             // broadcast: fx2's panel has no business seeing fx1's values, and
             // two positions each showing a panel is explicitly supported.
             var byComp = {};
             for (var fk in msg.params) {
-                var pr = splitMasterFxPrefix(fk);
-                if (!pr) continue;
+                var pr = splitBusKey(fk);
+                if (!pr || pr.bus !== active) continue;
                 (byComp[pr.comp] || (byComp[pr.comp] = {}))[fk] = msg.params[fk];
             }
             for (var ck in byComp) {
@@ -599,12 +645,14 @@
         }
     }
 
-    /** Split "master_fx:fx1:cutoff" -> { comp: "master_fx:fx1", key: "cutoff" }. */
-    function splitMasterFxPrefix(fullKey) {
-        for (var i = 0; i < MASTER_FX_KEYS.length; i++) {
-            var p = MASTER_FX_KEYS[i] + ":";
+    /** Split "send1:fx1:cutoff" -> { bus, comp: "send1:fx1", key: "cutoff" }. */
+    function splitBusKey(fullKey) {
+        var bus = busOfKey(fullKey);
+        if (!bus) return null;
+        for (var i = 0; i < bus.keys.length; i++) {
+            var p = bus.keys[i] + ":";
             if (fullKey.indexOf(p) === 0) {
-                return { comp: MASTER_FX_KEYS[i], key: fullKey.substring(p.length) };
+                return { bus: bus, comp: bus.keys[i], key: fullKey.substring(p.length) };
             }
         }
         return null;
@@ -631,7 +679,7 @@
         activeSlot = n;
         waitingForData = true;
         // Persist tab in URL hash
-        var hash = (n === "master") ? "master-fx" : isNamedTab(n) ? n : "slot" + (n + 1);
+        var hash = isBusTab(n) ? buses[n].def.hash : isNamedTab(n) ? n : "slot" + (n + 1);
         history.replaceState(null, "", "#" + hash);
 
         tabButtons.forEach(function (btn) {
@@ -959,8 +1007,8 @@
 
     /** Helper to get component state for a given slot and component key. */
     function getComponentForDrag(slot, compKey) {
-        if (slot === "master") {
-            return masterFx.components[compKey] || null;
+        if (isBusTab(slot)) {
+            return buses[slot].components[compKey] || null;
         }
         return slots[slot] ? slots[slot].components[compKey] : null;
     }
@@ -1103,9 +1151,9 @@
     function getKnobMeta(prefixedKey) {
         var compState;
         var parts;
-        if (activeSlot === "master") {
-            parts = splitMasterFxPrefix(prefixedKey);
-            if (parts) compState = masterFx.components[parts.comp];
+        if (isBusTab(activeSlot)) {
+            parts = splitBusKey(prefixedKey);
+            if (parts) compState = parts.bus.components[parts.comp];
         }
         if (!compState) {
             parts = splitPrefix(prefixedKey);
@@ -1135,7 +1183,8 @@
     // ------------------------------------------------------------------
 
     function sendParamValue(slot, compPrefix, key, value) {
-        if (slot === "master") {
+        if (isBusTab(slot)) {
+            // Every bus's keys carry their own prefix; one message for all.
             send({
                 type: "set_master_fx_param",
                 key: compPrefix + ":" + key,
@@ -1665,8 +1714,8 @@
         }
         customUIFrames = {};
 
-        if (activeSlot === "master") {
-            renderMasterFx();
+        if (isBusTab(activeSlot)) {
+            renderBus(buses[activeSlot]);
             return;
         }
 
@@ -1913,8 +1962,15 @@
     var PIN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">' +
         '<path d="M9.5 1.5l5 5-1.4 1.4-1-1-2.6 2.6.4 3.4-1.4 1.4-2.8-2.8-3.2 3.2-.7-.7 3.2-3.2-2.8-2.8 1.4-1.4 3.4.4 2.6-2.6-1-1z" fill="currentColor"/></svg>';
 
+    // The pins of whatever tab is showing: a slot's, or an FX bus's.
+    function activePins() {
+        if (isBusTab(activeSlot)) return buses[activeSlot].pins || [];
+        if (typeof activeSlot === "number") return slots[activeSlot].pins || [];
+        return [];
+    }
+
     function makePinButton(comp, key, meta) {
-        if (typeof activeSlot !== "number") return null;           // chain slots only
+        if (typeof activeSlot !== "number" && !isBusTab(activeSlot)) return null; // slots and FX buses
         if (!meta) return null;
         var numeric = (meta.type === "float" || meta.type === "int" || !meta.type) &&
             typeof meta.min === "number" && typeof meta.max === "number" && meta.max > meta.min;
@@ -1933,11 +1989,13 @@
         b.addEventListener("touchstart", function (e) { e.stopPropagation(); }, { passive: true });
         b.onclick = function (e) {
             e.stopPropagation();
-            var slot = activeSlot;
-            var pinned = (slots[slot].pins || []).indexOf(full) >= 0;
-            send({ type: "pin_mixer", slot: slot, key: full, value: pinned ? "0" : "1" });
+            var pinned = activePins().indexOf(full) >= 0;
+            var m = { type: "pin_mixer", key: full, value: pinned ? "0" : "1" };
+            // A bus key names its own strip; a slot's needs the slot.
+            if (typeof activeSlot === "number") m.slot = activeSlot;
+            send(m);
         };
-        paintPinButton(b, (slots[activeSlot].pins || []).indexOf(full) >= 0);
+        paintPinButton(b, activePins().indexOf(full) >= 0);
         return b;
     }
 
@@ -1950,8 +2008,8 @@
     }
 
     function refreshPinButtons() {
-        if (typeof activeSlot !== "number") return;
-        var pins = slots[activeSlot].pins || [];
+        if (typeof activeSlot !== "number" && !isBusTab(activeSlot)) return;
+        var pins = activePins();
         var btns = slotContentEl.querySelectorAll("[data-pin-key]");
         for (var i = 0; i < btns.length; i++) {
             paintPinButton(btns[i], pins.indexOf(btns[i].getAttribute("data-pin-key")) >= 0);
@@ -2411,14 +2469,16 @@
             // off master_fx=1 to use subscribe_master_fx and
             // set_master_fx_param, whose keys already carry their own
             // "master_fx:fxN:" prefix.
+            // A send bus the same, with bus=<id>.
             var qs = (slot === "tool") ? "schwungStandalone=1&tool=1"
                    : (slot === "master") ? "schwungStandalone=1&master_fx=1"
+                   : isBusTab(slot) ? "schwungStandalone=1&bus=" + buses[slot].def.id
                    : "schwungStandalone=1&slot=" + slot;
             var popUrl = url + sep + qs;
-            // One window per COMPONENT on the master bus -- keying on the slot
-            // alone would make fx2's pop-out replace fx1's.
-            var winKey = (slot === "master")
-                ? "schwungPopout_master_" + encodeURIComponent(componentOfUrl(url))
+            // One window per COMPONENT on a bus -- keying on the slot alone
+            // would make fx2's pop-out replace fx1's.
+            var winKey = isBusTab(slot)
+                ? "schwungPopout_" + slot + "_" + encodeURIComponent(componentOfUrl(url))
                 : "schwungPopout_" + slot;
             window.open(popUrl, winKey);
         };
@@ -2577,8 +2637,8 @@
                 // subscribe (that would re-send custom_ui and reload the iframe).
                 if (activeSlot === "tool") {
                     send({ type: "refetch_tool" });
-                } else if (activeSlot === "master") {
-                    send({ type: "subscribe_master_fx" });
+                } else if (isBusTab(activeSlot)) {
+                    send({ type: "subscribe_bus", key: buses[activeSlot].def.id });
                 } else if (typeof activeSlot === "number") {
                     send({ type: "subscribe", slot: activeSlot });
                 }
@@ -2595,12 +2655,12 @@
             postToIframe({ type: "paramResult", id: msg.id, value: tool.params[msg.key] || "" }, comp);
             return;
         }
-        // Master FX view: the key is "master_fx:fx1:cutoff", which splitPrefix
+        // FX bus view: the key is "master_fx:fx1:cutoff", which splitPrefix
         // cannot parse -- it splits on the FIRST colon and would look for a
-        // component called "master_fx". Read from the Master FX cache instead.
-        if (slot === "master") {
-            var mp = splitMasterFxPrefix(msg.key);
-            var mc = mp ? masterFx.components[mp.comp] : null;
+        // component called "master_fx". Read from the bus's cache instead.
+        if (isBusTab(slot)) {
+            var mp = splitBusKey(msg.key);
+            var mc = (mp && mp.bus === buses[slot]) ? mp.bus.components[mp.comp] : null;
             postToIframe({ type: "paramResult", id: msg.id,
                            value: mc ? (mc.params[msg.key] || "") : "" }, comp);
             return;
@@ -2630,10 +2690,10 @@
             send({ type: "set_param", slot: 0, key: msg.key, value: String(msg.value) });
             return;
         }
-        // Master FX writes go through set_master_fx_param, not set_param: the
-        // key already carries its own "master_fx:fxN:" prefix and there is no
-        // chain slot to address.
-        if (slot === "master") {
+        // FX bus writes go through set_master_fx_param, not set_param: the
+        // key already carries its own "master_fx:fxN:" / "send1:fxN:" prefix
+        // and there is no chain slot to address.
+        if (isBusTab(slot)) {
             send({ type: "set_master_fx_param", key: msg.key, value: String(msg.value) });
             return;
         }
@@ -2649,8 +2709,8 @@
 
     function handleIframeGetHierarchy(msg, comp) {
         var slot = activeSlot;
-        if (slot === "master") {
-            var mc = masterFx.components[comp];
+        if (isBusTab(slot)) {
+            var mc = buses[slot].components[comp];
             postToIframe({ type: "hierarchy", id: msg.id || null, component: comp,
                            data: mc ? mc.hierarchy : null }, comp);
             return;
@@ -2667,8 +2727,8 @@
 
     function handleIframeGetChainParams(msg, comp) {
         var slot = activeSlot;
-        if (slot === "master") {
-            var mc = masterFx.components[comp];
+        if (isBusTab(slot)) {
+            var mc = buses[slot].components[comp];
             postToIframe({ type: "chainParams", id: msg.id || null, component: comp,
                            data: mc ? mc.chainParams : null }, comp);
             return;
@@ -2720,10 +2780,10 @@
             return;
         }
 
-        // Master FX view: seed from that position's cached params. Without
+        // FX bus view: seed from that position's cached params. Without
         // this the panel opens blank and only fills in when something moves.
-        if (activeSlot === "master") {
-            var mc = masterFx.components[comp];
+        if (isBusTab(activeSlot)) {
+            var mc = buses[activeSlot].components[comp];
             if (mc && Object.keys(mc.params).length > 0)
                 postToIframe({ type: "paramUpdate", params: mc.params }, comp);
             return;
@@ -2746,63 +2806,66 @@
         if (any) postToIframe({ type: "paramUpdate", params: params }, comp);
     }
 
-    function renderMasterFx() {
-        slotTitleEl.textContent = "Master FX";
+    function renderBus(bus) {
+        var label = bus.def.label + (bus.def.tab === "master" ? "" : " FX");
+        slotTitleEl.textContent = label;
 
         var hasAnyModule = false;
         var hasAnyData = false;
-        for (var i = 0; i < MASTER_FX_KEYS.length; i++) {
-            var comp = masterFx.components[MASTER_FX_KEYS[i]];
+        for (var i = 0; i < bus.keys.length; i++) {
+            var comp = bus.components[bus.keys[i]];
             if (comp.module) hasAnyModule = true;
             if (comp.hierarchy || comp.chainParams || Object.keys(comp.params).length > 0) {
                 hasAnyData = true;
             }
         }
 
+        var none = "No effects loaded in " + label;
         if (!hasAnyData && !hasAnyModule) {
             if (waitingForData || !isConnected) {
-                debugEl.innerHTML = '<div class="loading-state"><span class="loading-spinner"></span> Loading Master FX...</div>';
+                debugEl.innerHTML = '<div class="loading-state"><span class="loading-spinner"></span> Loading ' +
+                    escapeHtml(label) + '...</div>';
             } else {
-                debugEl.innerHTML = '<p class="text-muted">No effects loaded in Master FX</p>';
+                debugEl.innerHTML = '<p class="text-muted">' + escapeHtml(none) + '</p>';
             }
             return;
         }
 
         if (!hasAnyModule) {
-            slotContentEl.innerHTML = '<p class="text-muted">No effects loaded in Master FX</p>';
+            slotContentEl.innerHTML = '<p class="text-muted">' + escapeHtml(none) + '</p>';
             return;
         }
 
-        var hasAnyCustomUI = MASTER_FX_KEYS.some(function (k) {
-            return masterFx.components[k].module && masterFx.customUI[k];
+        var hasAnyCustomUI = bus.keys.some(function (k) {
+            return bus.components[k].module && bus.customUI[k];
         });
         if (hasAnyCustomUI && slotHeaderControlsEl) {
-            slotHeaderControlsEl.appendChild(renderUiModeToggle(masterFx));
+            slotHeaderControlsEl.appendChild(renderUiModeToggle(bus));
         }
 
         var renderedCount = 0;
-        for (var k = 0; k < MASTER_FX_KEYS.length; k++) {
-            var compKey = MASTER_FX_KEYS[k];
-            var compState = masterFx.components[compKey];
+        for (var k = 0; k < bus.keys.length; k++) {
+            var compKey = bus.keys[k];
+            var compState = bus.components[compKey];
             if (!compState.module) continue;
 
-            var section = renderMasterFxSection(
-                compKey, compState,
-                sectionCollapsed(masterFx, compKey, MASTER_FX_KEYS[0]));
+            var section = renderBusSection(
+                bus, compKey, compState,
+                sectionCollapsed(bus, compKey, bus.keys[0]));
             slotContentEl.appendChild(section);
             renderedCount++;
         }
 
         if (renderedCount === 0) {
-            slotContentEl.innerHTML = '<p class="text-muted">No effects loaded in Master FX</p>';
+            slotContentEl.innerHTML = '<p class="text-muted">' + escapeHtml(none) + '</p>';
         }
     }
 
     // ------------------------------------------------------------------
-    // Master FX section rendering
+    // FX bus section rendering
     // ------------------------------------------------------------------
 
-    function renderMasterFxSection(compKey, compState, isCollapsed) {
+    function renderBusSection(bus, compKey, compState, isCollapsed) {
         var section = document.createElement("div");
         section.className = "component-section";
         section.setAttribute("data-component", compKey);
@@ -2815,14 +2878,14 @@
         arrow.textContent = isCollapsed ? "\u25B6" : "\u25BC";
         var title = document.createElement("span");
         title.className = "component-title";
-        var displayLabel = MASTER_FX_LABELS[compKey] || compKey;
+        var displayLabel = bus.labels[compKey] || compKey;
         var moduleName = compState.module || "";
         title.textContent = displayLabel + (moduleName ? " - " + moduleName : "");
         header.appendChild(arrow);
         header.appendChild(title);
         header.onclick = function () {
-            masterFx.collapsed[compKey] =
-                !sectionCollapsed(masterFx, compKey, MASTER_FX_KEYS[0]);
+            bus.collapsed[compKey] =
+                !sectionCollapsed(bus, compKey, bus.keys[0]);
             renderSlot();
         };
         section.appendChild(header);
@@ -2833,9 +2896,9 @@
         // instead of the generated rows -- the same treatment an audio FX gets
         // in a chain slot, which is the whole point of #354. The Interface
         // override still wins, so the generated controls stay reachable.
-        var mfxCustomUrl = masterFx.customUI[compKey] || "";
-        if (mfxCustomUrl && !masterFx.useDefaultUI) {
-            var popOut = makePopOutButton(customUIUrlFor(mfxCustomUrl, compKey), "master");
+        var mfxCustomUrl = bus.customUI[compKey] || "";
+        if (mfxCustomUrl && !bus.useDefaultUI) {
+            var popOut = makePopOutButton(customUIUrlFor(mfxCustomUrl, compKey), bus.def.tab);
             popOut.classList.add("component-popout");
             popOut.onclick = (function (orig) {
                 return function (ev) { ev.stopPropagation(); return orig.apply(this, arguments); };
@@ -2843,7 +2906,7 @@
             header.appendChild(popOut);
             section.appendChild(
                 buildCustomUIFrame(compKey, mfxCustomUrl,
-                                   (MASTER_FX_LABELS[compKey] || compKey) + " UI"));
+                                   (bus.labels[compKey] || compKey) + " UI"));
             return section;
         }
 
@@ -2900,7 +2963,7 @@
             for (var i = 0; i < knobs.length && i < 8; i++) {
                 var knobKey = knobs[i];
                 var meta = findParamMeta(compState, knobKey);
-                var value = getMasterFxParamValue(compState, compKey, knobKey);
+                var value = getBusParamValue(compState, compKey, knobKey);
                 var knobEl = renderKnob(compKey, compState, knobKey, meta, value);
                 knobRow.appendChild(knobEl);
             }
@@ -2931,28 +2994,28 @@
         return section;
     }
 
-    /** Get param value from master FX component state. */
-    function getMasterFxParamValue(compState, compPrefix, key) {
+    /** Get param value from an FX bus component state. */
+    function getBusParamValue(compState, compPrefix, key) {
         var v = compState.params[compPrefix + ":" + key];
         if (v !== undefined) return v;
         return compState.params[key];
     }
 
-    function updateMasterFxParamValues(changedParams) {
-        if (activeSlot !== "master") return;
+    function updateBusParamValues(changedParams) {
+        if (!isBusTab(activeSlot)) return;
         if (!changedParams) { renderSlot(); return; }
 
         var needsFullRender = false;
 
         for (var fullKey in changedParams) {
             var value = changedParams[fullKey];
-            var parts = splitMasterFxPrefix(fullKey);
-            if (!parts) continue;
-            var compState = masterFx.components[parts.comp];
+            var parts = splitBusKey(fullKey);
+            if (!parts || parts.bus !== buses[activeSlot]) continue;
+            var compState = parts.bus.components[parts.comp];
             if (!compState) continue;
 
             // Skip if user is dragging this knob
-            if (dragging && dragging.component === parts.comp && dragging.key === parts.key && dragging.slot === "master") continue;
+            if (dragging && dragging.component === parts.comp && dragging.key === parts.key && dragging.slot === activeSlot) continue;
 
             // Try to update knob visual (animated for smooth transitions)
             var knobContainer = slotContentEl.querySelector('[data-param-key="' + fullKey + '"]');

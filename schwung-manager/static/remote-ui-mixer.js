@@ -171,8 +171,12 @@
         var selects = {};        // id -> choice control (dropdowns)
         var toggles = {};        // id -> { button, label }
         var names = [];          // per-slot name element
-        var fxKnobs = {};        // slot ("0".."7") -> the server's knob list; absent = not read
-        var fxBoxes = [];        // per-slot container the effect knobs are drawn in
+        // A STRIP is a slot ("0".."7") or an FX bus ("send1", "send2",
+        // "master_fx"); a bus's knob keys name the bus, so their values are
+        // global ("g|send1:fx1:mix") and they are written with no slot.
+        var fxKnobs = {};        // strip -> the server's knob list; absent = not read
+        var fxBoxes = {};        // strip -> container the effect knobs are drawn in
+        var fxEmpty = {};        // strip -> what to show when it has none (buses only)
         var noticeEl = null;
 
         function id(slot, key) { return (slot === null ? "g" : String(slot)) + "|" + key; }
@@ -207,7 +211,7 @@
                 synced = true;
                 if (typeof msg.live === "boolean") live = msg.live;
                 fxKnobs = msg.fx || {};
-                for (var fs = 0; fs < SLOTS; fs++) renderFx(fs);
+                for (var fs in fxBoxes) renderFx(fs);
                 merge(msg);
                 refreshAll();
                 return;
@@ -218,7 +222,7 @@
             if (msg.fx) {
                 for (var sk in msg.fx) {
                     fxKnobs[sk] = msg.fx[sk];
-                    renderFx(parseInt(sk, 10));
+                    renderFx(sk);
                 }
             }
             var changed = merge(msg);
@@ -232,7 +236,7 @@
             model = {};
             synced = false;
             fxKnobs = {};
-            for (var rs = 0; rs < SLOTS; rs++) renderFx(rs);
+            for (var rs in fxBoxes) renderFx(rs);
             live = false;
             refreshAll();
         }
@@ -496,43 +500,57 @@
             return b;
         }
 
-        // One knob per effect mix the server found for this slot. Rebuilt only
-        // when the slot's knob LIST changes; values update in place like any
-        // other control.
-        function renderFx(slot) {
-            var box = fxBoxes[slot];
+        // The FX buses' strips, and how a bus's knobs are named.
+        var BUS_NAMES = { send1: "Send A", send2: "Send B", master_fx: "Master FX" };
+
+        // One knob per pin the server has for this strip -- an effect's mix
+        // by default, anything else pinned from a Slot or bus tab. Rebuilt
+        // only when the strip's knob LIST changes; values update in place like
+        // any other control.
+        function renderFx(strip) {
+            strip = String(strip);
+            var box = fxBoxes[strip];
             if (!box) return;
+            var busName = BUS_NAMES[strip] || "";
+            // A bus's controls are global (slot null); a slot's are its own.
+            var slot = busName ? null : parseInt(strip, 10);
             for (var cid in controls) {
-                if (controls[cid].fx && controls[cid].slot === slot) {
+                if (controls[cid].fx && controls[cid].strip === strip) {
                     clearTimeout(controls[cid].timer);
                     clearTimeout(controls[cid].settle);
                     delete controls[cid];
                 }
             }
             for (var sid in selects) {
-                if (selects[sid].slot === slot) delete selects[sid];
+                if (selects[sid].strip === strip) delete selects[sid];
             }
             box.textContent = "";
-            var list = fxKnobs[String(slot)] || [];
+            var list = fxKnobs[strip] || [];
             box.hidden = list.length === 0;
+            if (fxEmpty[strip]) fxEmpty[strip].hidden = list.length > 0 || !(strip in fxKnobs);
             if (!list.length) return;
             var lastGroup = null;
+            var where = busName || ("Slot " + (slot + 1));
             for (var i = 0; i < list.length; i++) {
                 var k = list[i];
                 // The server decides: an effect's mix reads as one of the
-                // slot's Effects, anything else pinned reads as Pinned.
+                // strip's Effects, anything else pinned reads as Pinned.
                 var group = k.effect ? "Effects" : "Pinned";
                 if (group !== lastGroup) {
-                    box.appendChild(el("div", "mixer-fx-title", group));
+                    // On the returns strip two buses share a column pair, so
+                    // each says whose effects these are.
+                    var title = (busName && strip !== "master_fx") ? busName + " " + group.toLowerCase() : group;
+                    box.appendChild(el("div", "mixer-fx-title", title));
                     lastGroup = group;
                 }
                 var pos = COMPONENT_NAMES(k.comp);
                 var label = (k.comp === "synth" ? "" : k.module + " ") + k.name.toLowerCase();
-                var aria = "Slot " + (slot + 1) + " " + pos + " " + k.module + " " + k.name;
+                var aria = where + " " + pos + " " + k.module + " " + k.name;
                 var wrap = (k.options && k.options.length) ? choice(slot, k, label, aria)
                                                            : slider(slot, k.key, fxKind(k), label, aria);
                 var ctl = controls[id(slot, k.key)];
-                if (ctl) ctl.fx = true;
+                if (ctl) { ctl.fx = true; ctl.strip = strip; }
+                if (selects[id(slot, k.key)]) selects[id(slot, k.key)].strip = strip;
                 var lab = wrap.querySelector(".mixer-label");
                 lab.title = pos + " \u00b7 " + k.module + " \u00b7 " + k.name +
                     (k.guessed ? " (the Mixer picked this parameter by its name)" : "");
@@ -541,11 +559,14 @@
                     wrap.classList.add("mixer-pinned");
                     var un = el("button", "mixer-unpin", "\u00d7");
                     un.type = "button";
-                    un.setAttribute("aria-label", "Unpin " + k.name + " from slot " + (slot + 1));
+                    un.setAttribute("aria-label", "Unpin " + k.name + " from " + (busName || "slot " + (slot + 1)));
                     un.title = "Unpin";
                     (function (key) {
                         un.addEventListener("click", function () {
-                            sendMsg({ type: "pin_mixer", slot: slot, key: key, value: "0" });
+                            // A bus key names its own strip; a slot's needs the slot.
+                            var m = { type: "pin_mixer", key: key, value: "0" };
+                            if (slot !== null) m.slot = slot;
+                            sendMsg(m);
                         });
                     })(k.key);
                     wrap.insertBefore(un, wrap.firstChild);
@@ -618,7 +639,7 @@
             var fxBox = el("div", "mixer-fx");
             fxBox.setAttribute("role", "group");
             fxBox.setAttribute("aria-label", "Slot " + n + " effects");
-            fxBoxes[slot] = fxBox;
+            fxBoxes[String(slot)] = fxBox;
             strip.appendChild(fxBox);
             strip.appendChild(slider(slot, "slot:volume", "volume", "Level", "Slot " + n + " level"));
 
@@ -627,6 +648,16 @@
             btns.appendChild(toggle(slot, "slot:soloed", "S", "Solo slot " + n, "mixer-solo"));
             strip.appendChild(btns);
             return strip;
+        }
+
+        // A bus's effect box. Bus knobs are written with no slot.
+        function busFxBox(bus, ariaLabel) {
+            var box = el("div", "mixer-fx");
+            box.setAttribute("role", "group");
+            box.setAttribute("aria-label", ariaLabel);
+            box.hidden = true;
+            fxBoxes[bus] = box;
+            return box;
         }
 
         function returnsStrip() {
@@ -640,10 +671,35 @@
             strip.appendChild(head);
 
             strip.appendChild(slider(null, "send1:to_send2", "send", "A → B", "Send A into send B"));
+            // Each send's effects, across the strip's full width (two half
+            // columns cut every name short), then the two return faders.
+            strip.appendChild(busFxBox("send1", "Send A effects"));
+            strip.appendChild(busFxBox("send2", "Send B effects"));
             var faders = el("div", "mixer-return-faders");
             faders.appendChild(slider(null, "send1:return", "ret", "Return A", "Return A level"));
             faders.appendChild(slider(null, "send2:return", "ret", "Return B", "Return B level"));
             strip.appendChild(faders);
+            return strip;
+        }
+
+        // Master FX: the master bus's effect mixes and anything pinned from
+        // the Master FX tab. There is no master level here -- that is Move's
+        // own volume knob.
+        function masterStrip() {
+            var strip = el("section", "mixer-strip mixer-master");
+            strip.setAttribute("aria-labelledby", "mixer-master-title");
+            var head = el("header", "mixer-strip-head");
+            var h = el("h3", "mixer-strip-title", "Master");
+            h.id = "mixer-master-title";
+            head.appendChild(h);
+            head.appendChild(el("div", "mixer-strip-name", "Master FX"));
+            strip.appendChild(head);
+            strip.appendChild(busFxBox("master_fx", "Master FX effects"));
+            var empty = el("p", "mixer-empty text-muted",
+                "Nothing here. A Master FX effect's mix appears when it is loaded; pin more from the Master FX tab.");
+            empty.hidden = true;
+            fxEmpty.master_fx = empty;
+            strip.appendChild(empty);
             return strip;
         }
 
@@ -652,7 +708,8 @@
             selects = {};
             toggles = {};
             names = [];
-            fxBoxes = [];
+            fxBoxes = {};
+            fxEmpty = {};
             rootEl = el("div", "mixer");
             rootEl.setAttribute("role", "group");
             rootEl.setAttribute("aria-label", "Mixer");
@@ -662,8 +719,9 @@
             container.appendChild(noticeEl);
 
             for (var s = 0; s < SLOTS; s++) rootEl.appendChild(slotStrip(s));
-            for (var fs2 = 0; fs2 < SLOTS; fs2++) renderFx(fs2);
             rootEl.appendChild(returnsStrip());
+            rootEl.appendChild(masterStrip());
+            for (var fs2 in fxBoxes) renderFx(fs2);
             container.appendChild(rootEl);
 
             var hint = el("p", "mixer-hint text-muted",

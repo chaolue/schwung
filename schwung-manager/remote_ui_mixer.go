@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,9 +80,10 @@ type mixerKeyRef struct {
 
 func (k mixerKeyRef) storeKey() string { return mixerStoreKey(k.slot, k.key) }
 
-// mixerStoreKey: "<slot>|<key>" for a slot value, "g|<key>" for a global one.
+// mixerStoreKey: "<slot>|<key>" for a slot value, "g|<key>" for a global one
+// -- and for an FX bus strip's knob, whose key names its bus and is unique.
 func mixerStoreKey(slot int, key string) string {
-	if slot < 0 {
+	if slot < 0 || slot >= mixerSlots {
 		return "g|" + key
 	}
 	return strconv.Itoa(slot) + "|" + key
@@ -474,6 +476,25 @@ func (ru *RemoteUI) handleUnsubscribeMixer(c *ruClient) {
 func (ru *RemoteUI) handleSetMixerParam(ctx context.Context, c *ruClient, msg wsMessage) {
 	perSlot, ok := mixerWriteScope(msg.Key)
 	if !ok {
+		// An FX bus's knob: the key names its strip, and it is written on slot 0.
+		if strip, isBus := stripOfBusKey(msg.Key); isBus {
+			knob, shown := ru.mix.fx.knob(strip, msg.Key)
+			if !shown {
+				ru.sendError(ctx, c, "set_mixer_param: not a mixer key: "+msg.Key)
+				return
+			}
+			if !validFxWrite(knob, msg.Value) {
+				ru.sendError(ctx, c, fmt.Sprintf("set_mixer_param: bad value %q for %s", msg.Value, msg.Key))
+				return
+			}
+			if !ru.requireShm(ctx, c) {
+				return
+			}
+			if err := ru.setParam(0, msg.Key, msg.Value); err != nil {
+				ru.sendError(ctx, c, "set_mixer_param failed: "+err.Error())
+			}
+			return
+		}
 		// An effect knob the Mixer is showing on that slot -- and only that.
 		if msg.Slot != nil {
 			if knob, shown := ru.mix.fx.knob(int(*msg.Slot), msg.Key); shown {
@@ -520,6 +541,20 @@ func (ru *RemoteUI) handleSetMixerParam(ctx context.Context, c *ruClient, msg ws
 // mixerNotify takes one notify-ring change. Called for every change the ring
 // carries; anything that is not a mixer value is ignored here.
 func (ru *RemoteUI) mixerNotify(ctx context.Context, slot uint8, key, value string) {
+	// An FX bus position's key: a knob on that bus's strip, or a module
+	// change there.
+	if strip, isBus := stripOfBusKey(key); isBus && slot == 0 {
+		if knob, ok := ru.mix.fx.knob(strip, key); ok {
+			if v, ok := normalizeFxValue(knob, value); ok && ru.mix.store.put(mixerStoreKey(strip, key), v) {
+				ru.mix.kick()
+			}
+			return
+		}
+		if strings.HasSuffix(key, ":module") && len(ru.mixerClients()) > 0 {
+			ru.mixerScheduleModules(ctx, strip, mixerModulesDelay)
+		}
+		return
+	}
 	if int(slot) < mixerSlots {
 		if knob, ok := ru.mix.fx.knob(int(slot), key); ok {
 			if v, ok := normalizeFxValue(knob, value); ok && ru.mix.store.put(mixerStoreKey(int(slot), key), v) {
@@ -586,8 +621,9 @@ func (ru *RemoteUI) mixerScheduleRefresh(ctx context.Context, slot int, delay ti
 			return
 		}
 		// What the slot(s) hold first -- it decides which effect knobs exist.
+		// "Everything" includes the FX buses' strips.
 		get := ru.blockingGetterIfShm()
-		for s := 0; s < mixerSlots; s++ {
+		for s := 0; s < mixerStrips; s++ {
 			if slot < 0 || s == slot {
 				ru.mixerRefreshModules(ctx, s, get)
 			}
@@ -628,11 +664,11 @@ func (ru *RemoteUI) mixerRead(ctx context.Context, keys []mixerKeyRef) {
 }
 
 // mixerBackstopKeys is the backstop's rotation: every value read over the
-// param channel, every effect knob, and each slot's module list ("#modules").
+// param channel, every effect knob, and each strip's module list ("#modules").
 func (ru *RemoteUI) mixerBackstopKeys() []mixerKeyRef {
 	keys := mixerReadKeys(-1)
 	keys = append(keys, ru.mix.fx.keys(-1)...)
-	for s := 0; s < mixerSlots; s++ {
+	for s := 0; s < mixerStrips; s++ {
 		keys = append(keys, mixerKeyRef{s, "#modules"})
 	}
 	return keys
@@ -664,12 +700,8 @@ func (ru *RemoteUI) mixerBackstop(ctx context.Context) {
 			ru.mixerRefreshModules(ctx, k.slot, get)
 			return
 		}
-		slot := uint8(0)
-		if k.slot >= 0 {
-			slot = uint8(k.slot)
-		}
 		since := ms.store.begin()
-		raw, err := get(slot, k.key)
+		raw, err := get(readSlotOf(k.slot), k.key)
 		if err != nil {
 			return
 		}

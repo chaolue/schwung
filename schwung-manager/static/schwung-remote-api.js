@@ -208,6 +208,10 @@
     // set_master_fx_param — the key already carries its "master_fx:fxN:"
     // prefix, so there is no slot to address.
     var isMasterFx = query.get("master_fx") === "1";
+    // A send bus pop-out: bus=send1 / bus=send2. Same channel as Master FX --
+    // its own subscription, writes through set_bus_param -- for the bus named.
+    var busId = query.get("bus") || "";
+    if (busId !== "send1" && busId !== "send2") busId = "";
 
     var wsUrl = (window.location.protocol === "https:" ? "wss://" : "ws://") +
         window.location.host + "/ws/remote-ui";
@@ -272,7 +276,9 @@
 
         ws.onopen = function () {
             reconnectDelay = 1000;
-            if (isMasterFx) {
+            if (busId) {
+                ws.send(JSON.stringify({ type: "subscribe_bus", key: busId }));
+            } else if (isMasterFx) {
                 ws.send(JSON.stringify({ type: "subscribe_master_fx" }));
             } else if (isTool) {
                 ws.send(JSON.stringify({ type: "subscribe_tool" }));
@@ -312,7 +318,7 @@
 
         setParam: function (key, value) {
             if (ws && ws.readyState === WebSocket.OPEN) {
-                if (isMasterFx) {
+                if (isMasterFx || busId) {
                     ws.send(JSON.stringify({
                         type: "set_master_fx_param",
                         key: key,
@@ -352,7 +358,8 @@
             // params-only refetch (a full subscribe would re-send custom_ui).
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(
-                    isMasterFx ? { type: "subscribe_master_fx" }
+                    busId      ? { type: "subscribe_bus", key: busId }
+                  : isMasterFx ? { type: "subscribe_master_fx" }
                   : isTool     ? { type: "refetch_tool" }
                                : { type: "subscribe", slot: slot }));
             }

@@ -102,6 +102,9 @@ func TestWebUILinksCoverChainFXAndMasterFX(t *testing.T) {
 		`{"id":"","path":"/data/UserData/schwung/modules/audio_fx/echo/echo.so"},` +
 		`{"id":"","path":""},{"id":"","path":""},{"id":"","path":""},{"id":"","path":""},` +
 		`{"id":"echo","path":"/x/echo/echo.so"}]`
+	// And the send buses, which are the same shape under their own prefix.
+	vals["0/send1:modules"] = `[]`
+	vals["0/send2:modules"] = `[{"id":"","path":""},{"id":"echo","path":"/x/echo/echo.so"}]`
 	f := &fakeParams{vals: vals}
 	got := findModuleWebUILinks(f.get, "echo", "audio_fx", testWebUIBase)
 
@@ -110,6 +113,7 @@ func TestWebUILinksCoverChainFXAndMasterFX(t *testing.T) {
 		{Where: "Slot 7 Audio FX 8", URL: testWebUIBase + "?component=fx8&schwungStandalone=1&slot=6"},
 		{Where: "Master FX 3", URL: testWebUIBase + "?component=master_fx%3Afx3&schwungStandalone=1&master_fx=1"},
 		{Where: "Master FX 8", URL: testWebUIBase + "?component=master_fx%3Afx8&schwungStandalone=1&master_fx=1"},
+		{Where: "Send B FX 2", URL: testWebUIBase + "?component=send2%3Afx2&schwungStandalone=1&bus=send2"},
 	}
 	if len(got.Links) != len(want) {
 		t.Fatalf("got %+v, want %+v", got.Links, want)
@@ -119,8 +123,8 @@ func TestWebUILinksCoverChainFXAndMasterFX(t *testing.T) {
 			t.Errorf("link %d = %+v, want %+v", i, got.Links[i], want[i])
 		}
 	}
-	if len(f.reads) != webUIChainSlots+1 {
-		t.Errorf("want one read per slot + one for Master FX, made %d: %v", len(f.reads), f.reads)
+	if len(f.reads) != webUIChainSlots+len(fxBuses) {
+		t.Errorf("want one read per slot + one per FX bus, made %d: %v", len(f.reads), f.reads)
 	}
 }
 

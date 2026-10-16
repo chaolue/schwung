@@ -1012,14 +1012,15 @@
 
 /* ================================================================
    Mixer tab (static/remote-ui-mixer.js)
-   Eight slot strips (Move's four, then the aux four) and a returns
-   strip, in one row when there is room. Narrower, the strips go four
-   to a row -- Move's tracks, then the aux slots -- with the returns
-   below; seeing every level at once is the point of a mixer.
+   Eight slot strips (Move's four, then the aux four), a returns strip
+   and a Master strip, in one row when there is room. Narrower, the
+   strips go four to a row -- Move's tracks, then the aux slots -- with
+   the returns and Master below; seeing every level at once is the
+   point of a mixer.
    ================================================================ */
 .mixer {
     display: grid;
-    grid-template-columns: repeat(8, minmax(0, 1fr)) minmax(0, 1.3fr);
+    grid-template-columns: repeat(8, minmax(0, 1fr)) minmax(0, 1.6fr) minmax(0, 1fr);
     gap: var(--space-sm);
     align-items: stretch;
 }
@@ -1035,7 +1036,7 @@
     }
 
     .mixer-returns {
-        grid-column: 1 / -1;
+        grid-column: 1 / 4;
     }
 }
 
@@ -1238,6 +1239,12 @@
     gap: var(--space-sm);
 }
 
+.mixer-empty {
+    margin: 0;
+    font-size: 0.7rem;
+    text-align: center;
+}
+
 .mixer-notice {
     margin: 0 0 var(--space-sm);
 }
@@ -1253,7 +1260,8 @@
         gap: 6px;
     }
 
-    .mixer-returns {
+    .mixer-returns,
+    .mixer-master {
         grid-column: 1 / -1;
     }
 

@@ -228,7 +228,65 @@ func parseMasterFxModules(raw string) (slotModules, bool) {
 // readMasterFxModules reads what Master FX holds, with the same error rule as
 // readSlotModules.
 func readMasterFxModules(get paramGetter) (slotModules, error) {
-	raw, err := get(0, "master_fx:modules")
+	return readBusModules(get, masterFxBus)
+}
+
+// ---------------------------------------------------------------------------
+// The three device-wide FX chains: Master FX and the two send buses.
+//
+// They are one shape to the shim -- eight positions, each "<bus>:fx<N>:<param>"
+// on slot 0, and "<bus>:modules" answering all eight in one read -- so the
+// Remote UI treats them as one thing with three prefixes rather than as Master
+// FX plus two copies of it.
+// ---------------------------------------------------------------------------
+
+type fxBus struct {
+	ID    string // the shim's key prefix without its colon: "master_fx", "send1", "send2"
+	Label string // "Master FX", "Send A", "Send B"
+}
+
+var (
+	masterFxBus = fxBus{ID: "master_fx", Label: "Master FX"}
+	fxBuses     = []fxBus{masterFxBus, {ID: "send1", Label: "Send A"}, {ID: "send2", Label: "Send B"}}
+)
+
+func fxBusByID(id string) (fxBus, bool) {
+	for _, b := range fxBuses {
+		if b.ID == id {
+			return b, true
+		}
+	}
+	return fxBus{}, false
+}
+
+// splitBusKey splits "send1:fx2:mix" into the bus, the position ("fx2") and
+// the parameter ("mix"). A bus-level key ("send1:return") is not a position's
+// and is refused, as is a position past the cap.
+func splitBusKey(key string) (bus fxBus, comp, param string, ok bool) {
+	id, rest, found := strings.Cut(key, ":")
+	if !found {
+		return fxBus{}, "", "", false
+	}
+	bus, ok = fxBusByID(id)
+	if !ok {
+		return fxBus{}, "", "", false
+	}
+	comp, param, found = strings.Cut(rest, ":")
+	if !found || param == "" {
+		return fxBus{}, "", "", false
+	}
+	for _, fx := range masterFxSlots {
+		if comp == fx {
+			return bus, comp, param, true
+		}
+	}
+	return fxBus{}, "", "", false
+}
+
+// readBusModules reads what one bus holds: ONE read of "<bus>:modules", else a
+// read per position. Same error rule as readSlotModules.
+func readBusModules(get paramGetter, bus fxBus) (slotModules, error) {
+	raw, err := get(0, bus.ID+":modules")
 	if err == nil {
 		if m, ok := parseMasterFxModules(raw); ok {
 			return m, nil
@@ -238,7 +296,7 @@ func readMasterFxModules(get paramGetter) (slotModules, error) {
 	}
 	out := slotModules{}
 	for _, fx := range masterFxSlots {
-		v, err := get(0, "master_fx:"+fx+":module")
+		v, err := get(0, bus.ID+":"+fx+":module")
 		if err != nil {
 			if paramAnswered(err) {
 				continue

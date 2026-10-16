@@ -1977,6 +1977,11 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
   MODULE they were made on — a different module in that position hides the pin
   rather than driving a stranger's parameter of the same key. An effect's mix
   is a DEFAULT pin (`offered`), so it can be unpinned and stays unpinned.
+- **Master FX, Send A and Send B are one shape** (`fxBuses`): three tabs, and
+  three Mixer STRIPS beside the eight slots (`remote_ui_strips.go`) -- a bus
+  knob's key names its bus, so its value is global and its write needs no slot.
+  The web set ring used to DROP a send position's parameter write; it now sets
+  it as the Master FX block does.
 
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's

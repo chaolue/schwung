@@ -4266,13 +4266,45 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
      * own set restore writes through the serve, and a save it triggered would
      * write EVERY level -- turning the fields a set's file deliberately leaves
      * absent (absent is not zero; see loadSendFxChainConfigForSet) into stored
-     * values carried over from the previous set. */
+     * values carried over from the previous set.
+     *
+     * A loaded position's PARAMETER is set here too, exactly as a Master FX
+     * position's is above: the Remote UI's Send A/B tabs and the Mixer's
+     * returns strip write "send<N>:fx<M>:<param>" through this ring, and
+     * dropping it moved nothing on the device. What is loaded (module, the
+     * read-only names, the loader's states) stays on the shadow_param path,
+     * which owns the staging; so does every write while the position is still
+     * loading -- there is no module yet to give it to. shadow_ui's autosave
+     * reads each position's state back, so no flag is needed for these. */
     {
         int send_idx = -1, send_fx = -1;
         const char *send_param = NULL;
         if (send_fx_route(key, SEND_BUSES, SEND_FX_SLOTS,
                           &send_idx, &send_fx, &send_param)) {
-            if (send_fx < 0 && send_bus_level_set(send_idx, send_param, value)) {
+            if (send_fx >= 0) {
+                master_fx_slot_t *sfx = &shadow_send_fx_slots[send_idx][send_fx];
+                const int structural =
+                    !strcmp(send_param, "module") || !strcmp(send_param, "name") ||
+                    !strcmp(send_param, "is_loading") || !strcmp(send_param, "load_error") ||
+                    !strcmp(send_param, "chain_params") || !strcmp(send_param, "ui_hierarchy");
+                if (structural ||
+                    shadow_fx_load_state(shadow_fx_load_flat_send(send_idx, send_fx)) == FX_LOAD_LOADING) {
+                    return;
+                }
+                if (strcmp(send_param, "bypassed") == 0) {
+                    sfx->bypassed = (value[0] && atoi(value)) ? 1 : 0;
+                } else if (shadow_scene_bus_edit_write(send_idx + 1, send_fx, send_param, value)) {
+                    /* armed: the write became a scene lock */
+                } else if (sfx->api && sfx->instance && sfx->api->set_param) {
+                    sfx->api->set_param(sfx->instance, send_param, value);
+                    shadow_scene_bus_note_write(send_idx + 1, send_fx, send_param, value);
+                } else {
+                    return; /* an empty position: nothing took it, so nothing to tell */
+                }
+                if (host.on_param_changed) host.on_param_changed(slot, key, value);
+                return;
+            }
+            if (send_bus_level_set(send_idx, send_param, value)) {
                 shadow_control_t *ctrl = host.shadow_control_ptr ? *host.shadow_control_ptr : NULL;
                 if (ctrl) {
                     ctrl->ui_flags_ext |= (uint16_t)(SHADOW_UI_FLAG_SEND_LEVELS_DIRTY >>

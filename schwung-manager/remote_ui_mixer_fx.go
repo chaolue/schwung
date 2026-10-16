@@ -241,7 +241,7 @@ func (fs *mixerFxState) keys(slot int) []mixerKeyRef {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	var out []mixerKeyRef
-	for s := 0; s < mixerSlots; s++ {
+	for s := 0; s < mixerStrips; s++ {
 		if slot >= 0 && s != slot {
 			continue
 		}
@@ -261,7 +261,7 @@ func (fs *mixerFxState) takeDirty() map[string][]mixerFxKnob {
 	}
 	out := make(map[string][]mixerFxKnob, len(fs.dirty))
 	for s := range fs.dirty {
-		out[strconv.Itoa(s)] = append([]mixerFxKnob{}, fs.knobs[s]...)
+		out[stripName(s)] = append([]mixerFxKnob{}, fs.knobs[s]...)
 	}
 	fs.dirty = make(map[int]bool)
 	return out
@@ -273,7 +273,7 @@ func (fs *mixerFxState) snapshot() map[string][]mixerFxKnob {
 	defer fs.mu.Unlock()
 	out := make(map[string][]mixerFxKnob, len(fs.read))
 	for s := range fs.read {
-		out[strconv.Itoa(s)] = append([]mixerFxKnob{}, fs.knobs[s]...)
+		out[stripName(s)] = append([]mixerFxKnob{}, fs.knobs[s]...)
 	}
 	return out
 }
@@ -360,13 +360,14 @@ func (ru *RemoteUI) blockingGetterIfShm() paramGetter {
 	return func(slot uint8, key string) (string, error) { return shm.GetParam(slot, key) }
 }
 
-// mixerRefreshModules reads what slot holds, rebuilds its knobs, and reads the
-// value of any knob that is new. get may be the non-blocking reader (backstop).
+// mixerRefreshModules reads what a strip holds (a slot, or an FX bus),
+// rebuilds its knobs, and reads the value of any knob that is new. get may be
+// the non-blocking reader (backstop).
 func (ru *RemoteUI) mixerRefreshModules(ctx context.Context, slot int, get paramGetter) bool {
-	if get == nil || slot < 0 || slot >= mixerSlots {
+	if get == nil || slot < 0 || slot >= mixerStrips {
 		return false
 	}
-	mods, err := readSlotModules(get, uint8(slot))
+	mods, err := readStripModules(get, slot)
 	if err != nil {
 		return false
 	}
@@ -385,12 +386,12 @@ func (ru *RemoteUI) mixerRefreshModules(ctx context.Context, slot int, get param
 		for i := 1; i <= chainFxPositions; i++ {
 			comp := "fx" + strconv.Itoa(i)
 			if id := mods[comp]; id != "" {
-				tmpl, ok := ru.mixerFxTemplates(id, comp, uint8(slot), get)
+				tmpl, ok := ru.mixerFxTemplates(id, stripComp(slot, comp), readSlotOf(slot), get)
 				if !ok {
 					return false
 				}
 				for _, t := range tmpl {
-					k := t.place(comp, id)
+					k := placeOnStrip(t, slot, comp, id)
 					k.Effect = true
 					fallback = append(fallback, k)
 				}
@@ -404,12 +405,15 @@ func (ru *RemoteUI) mixerRefreshModules(ctx context.Context, slot int, get param
 	var effects, others []mixerFxKnob
 	have := map[string]bool{}
 	for _, pin := range ru.slotPins(slot) {
-		comp, param, _ := strings.Cut(pin.Key, ":")
+		comp, param, ok := splitStripKey(slot, pin.Key)
+		if !ok {
+			continue
+		}
 		id := mods[comp]
 		if id == "" || (pin.Module != "" && pin.Module != id) || have[pin.Key] {
 			continue
 		}
-		params, ok := ru.moduleParams(id, comp, uint8(slot), get)
+		params, ok := ru.moduleParams(id, stripComp(slot, comp), readSlotOf(slot), get)
 		if !ok {
 			return false
 		}
@@ -417,12 +421,12 @@ func (ru *RemoteUI) mixerRefreshModules(ctx context.Context, slot int, get param
 		if !ok {
 			continue
 		}
-		k := fxKnobTemplate{param: meta}.place(comp, id)
+		k := placeOnStrip(fxKnobTemplate{param: meta}, slot, comp, id)
 		k.Pinned = true
 		have[pin.Key] = true
 		// Its module's mix? Then it reads as one of the slot's effects.
 		if kind, _, _ := componentPosition(comp); kind == "fx" {
-			if tmpl, ok := ru.mixerFxTemplates(id, comp, uint8(slot), get); ok {
+			if tmpl, ok := ru.mixerFxTemplates(id, stripComp(slot, comp), readSlotOf(slot), get); ok {
 				for _, t := range tmpl {
 					if t.param.Key == param {
 						k.Effect, k.Guessed = true, t.guessed
@@ -445,6 +449,14 @@ func (ru *RemoteUI) mixerRefreshModules(ctx context.Context, slot int, get param
 	knobs := append(effects, others...)
 
 	return ru.mixerSetKnobs(ctx, slot, knobs, get)
+}
+
+// placeOnStrip places a knob on a strip: its key is the strip's full key
+// ("send1:fx1:mix" on a bus), its Comp the position as the strip names it.
+func placeOnStrip(t fxKnobTemplate, strip int, comp, module string) mixerFxKnob {
+	k := t.place(stripComp(strip, comp), module)
+	k.Comp = comp
+	return k
 }
 
 // mixerSetKnobs installs a slot's knob list and reads the values of new ones.
@@ -546,7 +558,7 @@ func (ru *RemoteUI) mixerReadFx(ctx context.Context, keys []mixerKeyRef, get par
 			continue
 		}
 		since := ru.mix.store.begin()
-		raw, err := get(uint8(k.slot), k.key)
+		raw, err := get(readSlotOf(k.slot), k.key)
 		if v, ok := normalizeFxValue(knob, raw); err == nil && ok {
 			if ru.mix.store.putRead(k.storeKey(), v, since) {
 				ru.mix.kick()

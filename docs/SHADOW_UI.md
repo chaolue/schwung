@@ -2419,3 +2419,39 @@ Only a range already in percent is shown as it stands.
 The browser's pin buttons show only what the server's `mixer_pins` says, never
 their own guess, and a refusal (the cap, an enum) is announced and changes
 nothing.
+
+### Master FX, Send A and Send B are ONE shape on the Remote UI
+
+The two send buses had no Remote UI at all, and Master FX had its own tab and no
+place on the Mixer. To the shim the three are one shape -- eight positions,
+`<bus>:fx<N>:<param>` on slot 0, `<bus>:modules` answering all eight in one
+read -- so the manager treats them as one thing with three prefixes
+(`fxBuses`, `chain_components.go`) rather than Master FX plus two copies.
+
+- **Tabs.** `subscribe_bus` / `unsubscribe_bus` (key = `master_fx` | `send1` |
+  `send2`) replace a single `masterFxSub` with a per-client set; the old
+  `subscribe_master_fx` is the Master FX bus. `master_fx_info` kept its name and
+  gained `bus`. Notified changes are routed by `notifyBusOf`: every `master_fx:`
+  key goes to the Master FX tab as before, but for a send only a POSITION's key
+  does -- `send1:return` is the Mixer's. Writes are `set_master_fx_param` (alias
+  `set_bus_param`), refused for a send's levels and for `module`.
+- **The web set ring dropped send POSITION writes.** `shadow_direct_set_param`
+  kept every `send<N>:` key off the slot's chain -- correctly -- and then did
+  nothing with it, so a knob on a send tab would have moved nothing. It now sets
+  a loaded position's parameter exactly as the Master FX block above it does
+  (bypass host-side, scene edit-write, `set_param`, note-write, notify). What is
+  LOADED stays on the shadow_param path, and so does every write while the
+  position is still loading. `test_web_send_levels.c` covers both halves.
+- **Mixer STRIPS.** Effect knobs, pins and default mix pins were per SLOT; a
+  strip is now a slot (0..7) or a bus (`mixerSlots + i`), `remote_ui_strips.go`.
+  A bus knob's key names its bus, so its value rides in the Mixer's `global`
+  map and its write needs no slot. Each send's effects are drawn on the Returns
+  strip; Master FX gets a strip of its own (no master level -- that is Move's
+  volume knob). Pins and `offered` are keyed `master_fx` / `send1` / `send2` in
+  the same per-Set file, beside `"0".."7"`.
+- **Pop-outs and module-page links** use `bus=send1` for a send
+  (`schwung-remote-api.js`); Master FX keeps `master_fx=1`.
+- **A failed LAST read dropped the whole final batch** of a component's values
+  on subscribe (`sendInitialParamValues`: a `continue` jumped the flush). Found
+  by the first send test, whose module's last parameter had no value; it applied
+  to every slot component too.

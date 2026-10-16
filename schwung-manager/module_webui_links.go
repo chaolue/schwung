@@ -112,17 +112,23 @@ func findModuleWebUILinks(get paramGetter, moduleID, componentType, baseURL stri
 		}
 	}
 	if masterFx {
-		mods, err := readMasterFxModules(get)
-		if err != nil {
-			return unknown
-		}
-		for i, fx := range masterFxSlots {
-			if mods[fx] != moduleID {
-				continue
+		// Master FX and the two send buses: one read each. Master FX keeps
+		// its own flag (master_fx=1) for panels built before the sends had one.
+		for _, bus := range fxBuses {
+			mods, err := readBusModules(get, bus)
+			if err != nil {
+				return unknown
 			}
-			link(fmt.Sprintf("Master FX %d", i+1),
-				"component="+url.QueryEscape("master_fx:"+fx)+
-					"&schwungStandalone=1&master_fx=1")
+			for i, fx := range masterFxSlots {
+				if mods[fx] != moduleID {
+					continue
+				}
+				label, where := fmt.Sprintf("%s FX %d", bus.Label, i+1), "&schwungStandalone=1&bus="+bus.ID
+				if bus.ID == masterFxBus.ID {
+					label, where = fmt.Sprintf("Master FX %d", i+1), "&schwungStandalone=1&master_fx=1"
+				}
+				link(label, "component="+url.QueryEscape(bus.ID+":"+fx)+where)
+			}
 		}
 	}
 	if tool {
