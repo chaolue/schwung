@@ -1142,9 +1142,12 @@
     height: 200px;
 }
 
-/* The fader owns the gesture: a vertical drag must not scroll the page. */
+/* The fader owns the gesture: a vertical drag must not scroll the page.
+   It does NOT grow: the strip's spare height (a neighbour with more pinned
+   knobs makes every strip taller) goes ABOVE the label, which .mixer-fader's
+   flex-end puts there, so "Level" always sits directly over its fader. */
 .mixer-fader .mixer-track {
-    flex: 1;
+    flex: 0 0 auto;
     align-items: flex-end;
     touch-action: none;
 }
