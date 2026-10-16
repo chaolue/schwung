@@ -412,6 +412,85 @@ type mixerState struct {
 
 	// fx is the effect knobs -- see remote_ui_mixer_fx.go.
 	fx mixerFxState
+
+	// The meters: the latest read, and what was last sent (touched only by
+	// mixerLoop).
+	meters       UIMeters
+	lastMeters   *wsMixerMeters
+	lastMetersAt time.Time
+}
+
+// wsMixerMeters is the meters message: each strip's held peak, linear (1.0 =
+// full scale), [left, right]. Sent on its own, never through the store: it
+// changes every poll while anything plays, and is not state a client must
+// keep -- a dropped one is simply replaced by the next.
+type wsMixerMeters struct {
+	Type    string       `json:"type"` // "mixer_meters"
+	Slots   [][2]float64 `json:"slots"`
+	Returns [][2]float64 `json:"returns"`
+	Master  [2]float64   `json:"master"`
+}
+
+// Read-only Mixer values, from /schwung-ui version 5. Never writable: not in
+// any write list.
+const (
+	mixerMoveVolumeKey = "move:volume" // Move's own master volume, linear
+	mixerSceneEditKey  = "scene:edit"  // the armed snapshot 0..31, or -1
+)
+
+// mixerMetersResend: an unchanged meters message is still sent this often, so
+// a client that has just opened the tab is told what the meters read.
+const mixerMetersResend = time.Second
+
+func meterRound(v float64) float64 { return math.Round(v*10000) / 10000 }
+
+func metersMessage(m UIMeters) wsMixerMeters {
+	msg := wsMixerMeters{Type: "mixer_meters", Slots: make([][2]float64, len(m.Slots)),
+		Returns: make([][2]float64, len(m.Returns))}
+	for i, p := range m.Slots {
+		msg.Slots[i] = [2]float64{meterRound(p[0]), meterRound(p[1])}
+	}
+	for i, p := range m.Returns {
+		msg.Returns[i] = [2]float64{meterRound(p[0]), meterRound(p[1])}
+	}
+	msg.Master = [2]float64{meterRound(m.Master[0]), meterRound(m.Master[1])}
+	return msg
+}
+
+func sameMeters(a, b *wsMixerMeters) bool {
+	if a == nil || b == nil || a.Master != b.Master || len(a.Slots) != len(b.Slots) || len(a.Returns) != len(b.Returns) {
+		return false
+	}
+	for i := range a.Slots {
+		if a.Slots[i] != b.Slots[i] {
+			return false
+		}
+	}
+	for i := range a.Returns {
+		if a.Returns[i] != b.Returns[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// mixerSendMeters sends the meters to every Mixer client when they moved (or
+// once a second regardless). writeJSONTry: a client still busy with its last
+// write skips this one, and the next is newer anyway.
+func (ru *RemoteUI) mixerSendMeters(ctx context.Context, clients []*ruClient) {
+	ms := &ru.mix
+	if !ms.meters.OK {
+		return
+	}
+	msg := metersMessage(ms.meters)
+	now := time.Now()
+	if sameMeters(&msg, ms.lastMeters) && now.Sub(ms.lastMetersAt) < mixerMetersResend {
+		return
+	}
+	ms.lastMeters, ms.lastMetersAt = &msg, now
+	for _, c := range clients {
+		ru.writeJSONTry(ctx, c, msg)
+	}
 }
 
 // waitIdle blocks until no refresh or backstop read is pending or running.
@@ -762,6 +841,7 @@ func (ru *RemoteUI) mixerLoop(ctx context.Context) {
 		}
 
 		ru.mixerFlush(ctx, clients, live)
+		ru.mixerSendMeters(ctx, clients)
 	}
 }
 
@@ -775,6 +855,13 @@ func (ru *RemoteUI) mixerPollUI(ctx context.Context) bool {
 		return false
 	}
 	ms := &ru.mix
+	// Version 5: the meters, Move's volume and the armed snapshot. Absent from
+	// an older shim, and then simply never shown.
+	if m := ui.ReadMeters(); m.OK {
+		ms.meters = m
+		ms.store.put(mixerStoreKey(-1, mixerMoveVolumeKey), formatUIVolume(m.MoveVolume))
+		ms.store.put(mixerStoreKey(-1, mixerSceneEditKey), strconv.Itoa(m.SceneEdit))
+	}
 	for i, s := range slots {
 		if !s.Present {
 			continue // a slot this shim does not publish stays unknown

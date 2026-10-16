@@ -65,6 +65,18 @@
     var volumeTaper = makeTaper(VOLUME_MAX); // slot faders, to +12 dB
     var returnTaper = makeTaper(1);          // return faders, to 0 dB (127)
     var masterTaper = makeTaper(MASTER_MAX); // the master bus fader, to +6 dB
+    // The meters: ONE scale for every strip, full height = full scale
+    // (0 dBFS), so the same level reads the same height everywhere.
+    var meterTaper = makeTaper(1);
+    var METER_AMBER_DB = -12;  // green below, amber to -3 dB, red above
+    var METER_RED_DB = -3;
+    var METER_CLIP = 0.999;    // -0.01 dBFS: a full-scale sample
+
+    // A snapshot's name from its index (scene_doc.mjs): 0-15 are A1-A16,
+    // 16-31 B1-B16.
+    function snapshotName(i) {
+        return i < 16 ? "A" + (i + 1) : "B" + (i - 15);
+    }
 
     // "−6.0 dB", "+0.0 dB" is written "0.0 dB", silence is "−∞ dB".
     function formatDb(g) {
@@ -185,6 +197,9 @@
         var fxKnobs = {};        // strip -> the server's knob list; absent = not read
         var fxBoxes = {};        // strip -> container the effect knobs are drawn in
         var fxEmpty = {};        // strip -> what to show when it has none (buses only)
+        var meters = {};         // "0".."7", "ret0", "ret1", "master" -> meter
+        var armedEl = null;      // the scene-armed banner
+        var moveVolEl = null;    // "Move volume -6.0 dB" on the Master strip
         var noticeEl = null;
 
         function id(slot, key) { return (slot === null ? "g" : String(slot)) + "|" + key; }
@@ -214,6 +229,10 @@
         }
 
         function handle(msg) {
+            if (msg.type === "mixer_meters") {
+                paintMeters(msg);
+                return;
+            }
             if (msg.type === "mixer_state") {
                 model = {};          // absent means unknown
                 synced = true;
@@ -246,6 +265,7 @@
             fxKnobs = {};
             for (var rs in fxBoxes) renderFx(rs);
             live = false;
+            paintMeters(null);
             refreshAll();
         }
 
@@ -338,6 +358,7 @@
         function refreshOne(cid) {
             if (!attached()) return;
             if (cid.indexOf("g|") === 0) paintBusMutes();
+            if (cid === "g|scene:edit" || cid === "g|move:volume") paintStatus();
             var ctl = controls[cid];
             if (ctl && !held(ctl)) paintSlider(ctl);
             if (selects[cid]) paintChoice(selects[cid]);
@@ -347,8 +368,94 @@
             if (slot >= 0 && slot < SLOTS) paintStrip(slot);
         }
 
+        // --- meters ----------------------------------------------------------
+
+        // A meter beside a fader: two bars (L, R) and a clip light that stays
+        // lit until clicked. Visual only -- the clip light is the one part a
+        // keyboard or screen reader needs, so it is the one control.
+        function meter(stripKey, label) {
+            var wrap = el("div", "mixer-meter");
+            var clip = el("button", "mixer-clip", "");
+            clip.type = "button";
+            clip.setAttribute("aria-label", "Clear clip, " + label);
+            clip.title = "Clipped -- click to clear";
+            clip.hidden = true;
+            var bars = el("div", "mixer-meter-bars");
+            bars.setAttribute("aria-hidden", "true");
+            var amber = Math.round(meterTaper.toPos(dbToGain(METER_AMBER_DB)) * 1000) / 10;
+            var red = Math.round(meterTaper.toPos(dbToGain(METER_RED_DB)) * 1000) / 10;
+            var masks = [];
+            for (var c = 0; c < 2; c++) {
+                var bar = el("div", "mixer-meter-bar");
+                bar.style.background = "linear-gradient(to top, var(--meter-green) 0%, var(--meter-green) " + amber +
+                    "%, var(--meter-amber) " + amber + "%, var(--meter-amber) " + red + "%, var(--meter-red) " + red + "%)";
+                var mask = el("div", "mixer-meter-mask");
+                bar.appendChild(mask);
+                bars.appendChild(bar);
+                masks.push(mask);
+            }
+            var m = { masks: masks, clip: clip };
+            // Inside the fader's track: never the start of a fader drag.
+            clip.addEventListener("pointerdown", function (e) { e.stopPropagation(); });
+            clip.addEventListener("click", function (e) { e.stopPropagation(); clip.hidden = true; });
+            wrap.appendChild(clip);
+            wrap.appendChild(bars);
+            meters[stripKey] = m;
+            return wrap;
+        }
+
+        // Put a meter beside a fader (inside its track, so it is exactly the
+        // fader's height).
+        function withMeter(faderWrap, stripKey, label) {
+            var track = faderWrap.querySelector(".mixer-track");
+            if (track) track.appendChild(meter(stripKey, label));
+            return faderWrap;
+        }
+
+        function paintMeter(m, pair) {
+            for (var c = 0; c < 2; c++) {
+                var v = pair ? pair[c] : 0;
+                var pos = (v > 0) ? meterTaper.toPos(Math.min(1, v)) : 0;
+                m.masks[c].style.height = (100 - pos * 100).toFixed(1) + "%";
+                // Full scale: an int16 peak tops out at 32767/32768.
+                if (v >= METER_CLIP) m.clip.hidden = false;
+            }
+        }
+
+        function paintMeters(msg) {
+            if (!attached()) return;
+            for (var k in meters) {
+                var pair = null;
+                if (msg) {
+                    if (k === "master") pair = msg.master;
+                    else if (k.indexOf("ret") === 0) pair = (msg.returns || [])[parseInt(k.slice(3), 10)];
+                    else pair = (msg.slots || [])[parseInt(k, 10)];
+                }
+                paintMeter(meters[k], pair);
+            }
+        }
+
+        // The scene-armed banner and Move's volume -- both read-only, both
+        // from the same block as the meters.
+        function paintStatus() {
+            if (armedEl) {
+                var e = parseInt(model["g|scene:edit"], 10);
+                var on = synced && isFinite(e) && e >= 0;
+                armedEl.hidden = !on;
+                if (on) {
+                    armedEl.textContent = "Snapshot " + snapshotName(e) +
+                        " is armed: level, pan and send changes are saved to the snapshot, not played live.";
+                }
+            }
+            if (moveVolEl) {
+                var mv = known("g|move:volume") ? parseFloat(model["g|move:volume"]) : NaN;
+                moveVolEl.textContent = isFinite(mv) ? "Move " + formatDb(mv) : "";
+            }
+        }
+
         function refreshAll() {
             if (!attached()) return;
+            paintStatus();
             for (var c in controls) if (!held(controls[c])) paintSlider(controls[c]);
             for (var sc in selects) paintChoice(selects[sc]);
             for (var t in toggles) paintToggle(toggles[t]);
@@ -661,7 +768,8 @@
             fxBox.setAttribute("aria-label", "Slot " + n + " effects");
             fxBoxes[String(slot)] = fxBox;
             strip.appendChild(fxBox);
-            strip.appendChild(slider(slot, "slot:volume", "volume", "Level", "Slot " + n + " level"));
+            strip.appendChild(withMeter(slider(slot, "slot:volume", "volume", "Level", "Slot " + n + " level"),
+                                        String(slot), "slot " + n));
 
             var btns = el("div", "mixer-buttons");
             btns.appendChild(toggle(slot, "slot:muted", "M", "Mute slot " + n, "mixer-mute"));
@@ -709,10 +817,10 @@
                 return c;
             };
             faders.appendChild(col("send1:return_muted",
-                slider(null, "send1:return", "ret", "Return A", "Return A level"),
+                withMeter(slider(null, "send1:return", "ret", "Return A", "Return A level"), "ret0", "return A"),
                 toggle(null, "send1:return_muted", "M", "Mute return A", "mixer-mute")));
             faders.appendChild(col("send2:return_muted",
-                slider(null, "send2:return", "ret", "Return B", "Return B level"),
+                withMeter(slider(null, "send2:return", "ret", "Return B", "Return B level"), "ret1", "return B"),
                 toggle(null, "send2:return_muted", "M", "Mute return B", "mixer-mute")));
             strip.appendChild(faders);
             return strip;
@@ -731,6 +839,11 @@
             h.id = "mixer-master-title";
             head.appendChild(h);
             head.appendChild(el("div", "mixer-strip-name", "Master FX"));
+            // Move's own master volume, after this bus: shown, never set. In
+            // the header, so the strip's fader stays in line with the others.
+            moveVolEl = el("div", "mixer-move-volume text-muted", "");
+            moveVolEl.title = "Move's own volume knob, after the master bus. Schwung can show it but not set it.";
+            head.appendChild(moveVolEl);
             strip.appendChild(head);
             strip.appendChild(busFxBox("master_fx", "Master FX effects"));
             var empty = el("p", "mixer-empty text-muted",
@@ -738,7 +851,8 @@
             empty.hidden = true;
             fxEmpty.master_fx = empty;
             strip.appendChild(empty);
-            strip.appendChild(slider(null, "master_fx:level", "master", "Level", "Master level"));
+            strip.appendChild(withMeter(slider(null, "master_fx:level", "master", "Level", "Master level"),
+                                        "master", "the master bus"));
             var btns = el("div", "mixer-buttons");
             btns.appendChild(toggle(null, "master_fx:muted", "M", "Mute the master bus", "mixer-mute"));
             var byp = toggle(null, "master_fx:chain_bypassed", "FX", "Bypass all Master FX", "mixer-bypass");
@@ -755,6 +869,7 @@
             names = [];
             fxBoxes = {};
             fxEmpty = {};
+            meters = {};
             rootEl = el("div", "mixer");
             rootEl.setAttribute("role", "group");
             rootEl.setAttribute("aria-label", "Mixer");
@@ -762,6 +877,10 @@
             noticeEl = el("p", "mixer-notice text-muted", "");
             noticeEl.setAttribute("role", "status");
             container.appendChild(noticeEl);
+            armedEl = el("p", "mixer-armed", "");
+            armedEl.setAttribute("role", "status");
+            armedEl.hidden = true;
+            container.appendChild(armedEl);
 
             for (var s = 0; s < SLOTS; s++) rootEl.appendChild(slotStrip(s));
             rootEl.appendChild(returnsStrip());
@@ -785,6 +904,8 @@
         formatPan: formatPan,
         KINDS: KINDS,
         fxKind: fxKind,
+        snapshotName: snapshotName,
+        meterTaper: meterTaper,
         VOLUME_MAX: VOLUME_MAX,
         SEND_MAX: SEND_MAX
     };

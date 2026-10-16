@@ -90,6 +90,12 @@ for (let i = 0; i <= pk.max; i++) {
   const v = parseFloat(pk.toWire(i));
   check(v >= 0 && v <= 1 && pk.toInput(pk.toWire(i)) === i, "0..1 knob round-trips at " + i);
 }
+// The meters: one scale, full height at 0 dBFS, silence at the bottom.
+check(M.meterTaper.toPos(1) === 1 && M.meterTaper.toPos(0) === 0, "meter: 0 dBFS is the top, silence the bottom");
+check(M.meterTaper.toPos(0.5) > 0.8 && M.meterTaper.toPos(0.5) < 0.95, "meter: -6 dBFS sits high, as on a mixer");
+// The armed snapshot's name (scene_doc.mjs: halves 0-15 are A, 16-31 are B).
+check(M.snapshotName(0) === "A1" && M.snapshotName(15) === "A16" && M.snapshotName(16) === "B1" &&
+      M.snapshotName(31) === "B16", "snapshot names: " + M.snapshotName(18));
 console.log("  mixer maths: " + n + " checks OK");
 NODE
 

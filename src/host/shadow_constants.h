@@ -1128,6 +1128,8 @@ static inline corun_owner_t corun_event_owner(const volatile shadow_control_t *c
  * field behind it. Slots 4.. live in the v3 block appended at the end. Reach a
  * slot through the shadow_ui_state_*() accessors below, never the arrays. */
 #define SHADOW_UI_STATE_BASE_SLOTS 4
+/* The two send returns (SEND_BUSES, which this header cannot see). */
+#define SHADOW_UI_SEND_RETURNS 2
 #define SHADOW_UI_STATE_AUX_SLOTS  (SHADOW_UI_SLOTS - SHADOW_UI_STATE_BASE_SLOTS)
 
 typedef struct shadow_ui_state_t {
@@ -1170,12 +1172,27 @@ typedef struct shadow_ui_state_t {
      * silent. Indexed by slot directly -- appended whole, so it needs no
      * base/aux split. Consumers gate on `version >= 4`. */
     float slot_volume_lin[SHADOW_UI_SLOTS];
+    /* --- version 5 --- The Remote UI Mixer's METERS and two facts it shows,
+     * written by the shim at the end of every mix block (mix_meter.h). Peaks
+     * are linear (1.0 = full scale), held and falling 20 dB/s, so a reader
+     * sampling at 20 Hz never misses one and never has to reset anything.
+     *   meter_slot    each slot as it joins the mix: post-fader, pan, mute
+     *   meter_return  each send return as it joins the mix: post-level, mute
+     *   meter_master  the master bus after its Level / Mute -- before Move's
+     *                 volume knob, which comes after it
+     * Consumers gate on `version >= 5`. */
+    float meter_slot[SHADOW_UI_SLOTS][2];
+    float meter_return[SHADOW_UI_SEND_RETURNS][2];
+    float meter_master[2];
+    float move_volume;      /* Move's master volume as the shim reads it, linear */
+    uint8_t scene_edit;     /* the snapshot armed for editing, 0..31; 0xFF none */
+    uint8_t reserved5[3];
 } shadow_ui_state_t;
 
 /* Bump when a field is APPENDED to shadow_ui_state_t; consumers gate on it.
  * Never reorder or resize an existing field — the two processes are deployed
  * as separate files and can be out of step across an upgrade. */
-#define SHADOW_UI_STATE_VERSION 4
+#define SHADOW_UI_STATE_VERSION 5
 
 /* How many slots a reader may trust in this segment: what the writer says it
  * published, but never more than its version can hold (a v2 writer has no aux
