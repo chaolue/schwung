@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"nhooyr.io/websocket"
 )
@@ -66,11 +67,18 @@ func TestPinMixerEndToEnd(t *testing.T) {
 	if err := os.WriteFile(shmParamPath, make([]byte, shmParamSize), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	synthParams := `[{"key":"cutoff","name":"Cutoff","type":"float","min":0,"max":1}`
+	for _, k := range []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7"} {
+		synthParams += `,{"key":"` + k + `","name":"` + k + `","type":"float","min":0,"max":1}`
+	}
+	synthParams += `,{"key":"mode","name":"Mode","type":"enum","options":["Saw","Square","Noise"]}` +
+		`,{"key":"free","name":"Free","type":"float"}]`
 	ts := &tableShim{settings: true, vals: map[string]string{
 		"1/chain_modules":      `{"synth":"obxd","midi_fx":[],"fx":["verb"]}`,
-		"1/synth:chain_params": `[{"key":"cutoff","name":"Cutoff","type":"float","min":0,"max":1},{"key":"res","name":"Res","type":"float","min":0,"max":1},{"key":"a","name":"A","type":"float","min":0,"max":1},{"key":"b","name":"B","type":"float","min":0,"max":1},{"key":"mode","name":"Mode","type":"enum","options":["x","y"]}]`,
+		"1/synth:chain_params": synthParams,
 		"1/fx1:chain_params":   verbParams,
 		"1/synth:cutoff":       "0.25",
+		"1/synth:mode":         "Square", // a choice reported by NAME
 		"1/fx1:wet":            "0.4",
 		"1/knob_map":           `[]`,
 	}}
@@ -107,10 +115,6 @@ func TestPinMixerEndToEnd(t *testing.T) {
 	})
 	slotTab := &mixerHarness{t: t, ru: ru, conn: slotConn, ctx: ctx}
 	mixer := &mixerHarness{t: t, ru: ru, conn: mixConn, ctx: ctx}
-
-	slotTab.send(map[string]any{"type": "subscribe", "slot": 1})
-	slotTab.next("initial pins", func(m map[string]any) bool { return m["type"] == "mixer_pins" })
-	mixer.send(map[string]any{"type": "subscribe_mixer"})
 	knobs := func(m map[string]any) []map[string]any {
 		fx, _ := m["fx"].(map[string]any)
 		ks, _ := fx["1"].([]any)
@@ -120,29 +124,55 @@ func TestPinMixerEndToEnd(t *testing.T) {
 		}
 		return out
 	}
-	mixer.next("the effect knob", func(m map[string]any) bool { return len(knobs(m)) == 1 })
-
-	// Pin the synth's cutoff from the Slot tab.
-	slotTab.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": "synth:cutoff", "value": "1"})
-	slotTab.next("pins broadcast", func(m map[string]any) bool {
+	keysOf := func(m map[string]any) []string {
+		var out []string
 		ks, _ := m["keys"].([]any)
-		return m["type"] == "mixer_pins" && len(ks) == 1 && ks[0] == "synth:cutoff"
-	})
-	m := mixer.next("the pinned knob on the strip", func(m map[string]any) bool { return len(knobs(m)) == 2 })
-	pinned := knobs(m)[1]
-	if pinned["key"] != "synth:cutoff" || pinned["pinned"] != true || pinned["module"] != "obxd" {
-		t.Fatalf("pinned knob: %v", pinned)
+		for _, k := range ks {
+			out = append(out, k.(string))
+		}
+		return out
 	}
-	mixer.next("its value", func(m map[string]any) bool { v, _ := slotVal(m, "1", "synth:cutoff"); return v == "0.25" })
-	raw, _ := os.ReadFile(filepath.Join(dir, "set_state", "set-1", "mixer_pins.json"))
-	var doc pinDoc
-	if json.Unmarshal(raw, &doc) != nil || len(doc.Slots["1"]) != 1 || doc.Slots["1"][0].Module != "obxd" {
-		t.Fatalf("pins file: %s", raw)
+	pinsFile := func() pinDoc {
+		raw, _ := os.ReadFile(filepath.Join(dir, "set_state", "set-1", "mixer_pins.json"))
+		var doc pinDoc
+		_ = json.Unmarshal(raw, &doc)
+		return doc
 	}
 
-	// Refusals: an enum, an empty position, and a fifth pin.
+	slotTab.send(map[string]any{"type": "subscribe", "slot": 1})
+	slotTab.next("initial pins", func(m map[string]any) bool { return m["type"] == "mixer_pins" })
+
+	// Opening the Mixer pins the effect's mix BY DEFAULT -- an ordinary pin,
+	// so the Slot tab hears about it too.
+	mixer.send(map[string]any{"type": "subscribe_mixer"})
+	m := mixer.next("the effect's default pin", func(m map[string]any) bool { return len(knobs(m)) == 1 })
+	if k := knobs(m)[0]; k["key"] != "fx1:wet" || k["pinned"] != true || k["effect"] != true {
+		t.Fatalf("default pin: %v", k)
+	}
+	slotTab.next("default pin broadcast", func(m map[string]any) bool {
+		return m["type"] == "mixer_pins" && containsKey(keysOf(m), "fx1:wet")
+	})
+
+	// Pin the synth's cutoff, and a CHOICE parameter.
+	slotTab.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": "synth:cutoff", "value": "1"})
+	slotTab.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": "synth:mode", "value": "1"})
+	m = mixer.next("three knobs", func(m map[string]any) bool { return len(knobs(m)) == 3 })
+	ks := knobs(m)
+	if ks[0]["key"] != "fx1:wet" || ks[1]["key"] != "synth:cutoff" || ks[1]["effect"] == true {
+		t.Fatalf("order and groups: %v", ks)
+	}
+	if opts, _ := ks[2]["options"].([]any); ks[2]["key"] != "synth:mode" || len(opts) != 3 || ks[2]["max"] != 2.0 {
+		t.Fatalf("a choice pin: %v", ks[2])
+	}
+	mixer.next("cutoff's value", func(m map[string]any) bool { v, _ := slotVal(m, "1", "synth:cutoff"); return v == "0.25" })
+	mixer.next("the choice's value, as an index", func(m map[string]any) bool { v, _ := slotVal(m, "1", "synth:mode"); return v == "1" })
+	if doc := pinsFile(); len(doc.Slots["1"]) != 3 || doc.Slots["1"][1].Module != "obxd" {
+		t.Fatalf("pins file: %+v", doc)
+	}
+
+	// Refusals: a parameter with no range, an empty position.
 	for _, bad := range []struct{ key, why string }{
-		{"synth:mode", "not a numeric parameter"},
+		{"synth:free", "the Mixer can show"},
 		{"fx4:wet", "nothing is loaded"},
 	} {
 		slotTab.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": bad.key, "value": "1"})
@@ -151,32 +181,47 @@ func TestPinMixerEndToEnd(t *testing.T) {
 			return m["type"] == "error" && strings.Contains(msg, bad.why)
 		})
 	}
-	for _, k := range []string{"synth:res", "synth:a", "synth:b"} {
-		slotTab.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": k, "value": "1"})
+	// The cap counts every pin: three so far, five more fill it.
+	for _, k := range []string{"p1", "p2", "p3", "p4", "p5"} {
+		slotTab.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": "synth:" + k, "value": "1"})
 	}
-	slotTab.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": "fx1:size", "value": "1"})
+	slotTab.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": "synth:p6", "value": "1"})
 	slotTab.next("the cap", func(m map[string]any) bool {
 		msg, _ := m["message"].(string)
-		return m["type"] == "error" && strings.Contains(msg, "at most 4")
+		return m["type"] == "error" && strings.Contains(msg, "at most 8")
 	})
 
-	// The synth is swapped: its pins hide (never point at the new module),
-	// and come back with it.
-	ts.set("1/chain_modules", `{"synth":"braids","midi_fx":[],"fx":["verb"]}`)
-	ru.mixerNotify(ctx, 1, "synth:module", "braids")
-	mixer.next("pins hidden after the swap", func(m map[string]any) bool {
+	// Unpin the effect's DEFAULT pin: it stays gone, however often the slot
+	// is read again.
+	mixer.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": "fx1:wet", "value": "0"})
+	mixer.next("default unpinned", func(m map[string]any) bool { return m["fx"] != nil && len(knobs(m)) == 7 })
+	ru.mixerScheduleModules(ctx, 1, 0)
+	ru.mixerScheduleModules(ctx, 1, 50)
+	time.Sleep(300 * time.Millisecond)
+	if doc := pinsFile(); containsKey(pinKeys(doc.Slots["1"]), "fx1:wet") {
+		t.Fatal("an unpinned default came back on a re-read")
+	}
+
+	// A DIFFERENT effect in that position is newly added: it gets its own
+	// default pin. The synth is swapped at the same time, which hides its pins.
+	ts.set("1/chain_modules", `{"synth":"braids","midi_fx":[],"fx":["echo"]}`)
+	ts.set("1/fx1:chain_params", `[{"key":"mix","name":"Mix","type":"float","min":0,"max":1}]`)
+	ts.set("1/fx1:mix", "0.6")
+	ru.mixerNotify(ctx, 1, "fx1:module", "echo")
+	m = mixer.next("the new effect's default, the synth's pins hidden", func(m map[string]any) bool {
 		ks := knobs(m)
-		return m["fx"] != nil && len(ks) == 1 && ks[0]["key"] == "fx1:wet"
+		return m["fx"] != nil && len(ks) == 1 && ks[0]["key"] == "fx1:mix"
 	})
-	ts.set("1/chain_modules", `{"synth":"obxd","midi_fx":[],"fx":["verb"]}`)
-	ru.mixerNotify(ctx, 1, "synth:module", "obxd")
-	mixer.next("pins back with the module", func(m map[string]any) bool { return len(knobs(m)) == 5 })
+	_ = m
 
 	// Unpin from the Mixer.
+	ts.set("1/chain_modules", `{"synth":"obxd","midi_fx":[],"fx":["echo"]}`)
+	ru.mixerNotify(ctx, 1, "synth:module", "obxd")
+	mixer.next("synth pins back", func(m map[string]any) bool { return len(knobs(m)) == 8 })
 	mixer.send(map[string]any{"type": "pin_mixer", "slot": 1, "key": "synth:cutoff", "value": "0"})
 	mixer.next("unpinned", func(m map[string]any) bool {
 		ks := knobs(m)
-		if m["fx"] == nil || len(ks) != 4 {
+		if m["fx"] == nil || len(ks) != 7 {
 			return false
 		}
 		for _, k := range ks {

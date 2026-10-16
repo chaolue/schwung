@@ -197,6 +197,7 @@ const verbParams = `[{"key":"size","name":"Size","type":"float","min":0,"max":1}
 
 func TestMixerFxEndToEnd(t *testing.T) {
 	dir := t.TempDir()
+	writeActiveSet(t, dir, "set-fx")
 	origUI, origParam := uiStatePath, shmParamPath
 	uiStatePath = filepath.Join(dir, "schwung-ui")
 	shmParamPath = filepath.Join(dir, "schwung-param")
@@ -253,7 +254,9 @@ func TestMixerFxEndToEnd(t *testing.T) {
 		t.Fatalf("want one knob (the EQ has no mix): %v", ks)
 	}
 	k := ks[0].(map[string]any)
-	if k["key"] != "fx2:wet" || k["guessed"] != true || k["module"] != "verb" || k["step"] != 0.05 {
+	// The mix is pinned by default, so it can be unpinned like any pin.
+	if k["key"] != "fx2:wet" || k["guessed"] != true || k["module"] != "verb" || k["step"] != 0.05 ||
+		k["pinned"] != true || k["effect"] != true {
 		t.Fatalf("knob: %v", k)
 	}
 	h.next("fx value", func(m map[string]any) bool { v, _ := slotVal(m, "0", "fx2:wet"); return v == "0.35" })
