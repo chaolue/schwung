@@ -497,9 +497,14 @@
             var list = fxKnobs[String(slot)] || [];
             box.hidden = list.length === 0;
             if (!list.length) return;
-            box.appendChild(el("div", "mixer-fx-title", "Effects"));
+            var lastGroup = null;
             for (var i = 0; i < list.length; i++) {
                 var k = list[i];
+                var group = k.pinned ? "Pinned" : "Effects";
+                if (group !== lastGroup) {
+                    box.appendChild(el("div", "mixer-fx-title", group));
+                    lastGroup = group;
+                }
                 var pos = k.comp.replace("fx", "FX ");
                 var label = k.module + " " + k.name.toLowerCase();
                 var wrap = slider(slot, k.key, fxKind(k), label,
@@ -510,6 +515,20 @@
                 lab.title = "Audio " + pos + " \u00b7 " + k.module + " \u00b7 " + k.name +
                     (k.guessed ? " (the Mixer picked this parameter by its name)" : "");
                 if (k.guessed) wrap.classList.add("mixer-guessed");
+                if (k.pinned) {
+                    wrap.classList.add("mixer-pinned");
+                    lab.textContent = (k.comp === "synth" ? "" : k.module + " ") + k.name.toLowerCase();
+                    var un = el("button", "mixer-unpin", "\u00d7");
+                    un.type = "button";
+                    un.setAttribute("aria-label", "Unpin " + k.name + " from slot " + (slot + 1));
+                    un.title = "Unpin";
+                    (function (key) {
+                        un.addEventListener("click", function () {
+                            sendMsg({ type: "pin_mixer", slot: slot, key: key, value: "0" });
+                        });
+                    })(k.key);
+                    wrap.insertBefore(un, wrap.firstChild);
+                }
                 box.appendChild(wrap);
                 if (attached()) paintSlider(controls[id(slot, k.key)]);
             }
