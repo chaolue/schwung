@@ -76,6 +76,19 @@ static void fake_chain_set_param(void *inst, const char *key, const char *val)
 }
 static plugin_api_v2_t fake_chain_api;
 
+/* A module in a send position: records what reached it. */
+static int send_fx_sets = 0;
+static char send_fx_last_key[128];
+static char send_fx_last_value[64];
+static void fake_send_fx_set_param(void *inst, const char *key, const char *val)
+{
+    (void)inst;
+    send_fx_sets++;
+    snprintf(send_fx_last_key, sizeof send_fx_last_key, "%s", key);
+    snprintf(send_fx_last_value, sizeof send_fx_last_value, "%s", val);
+}
+static audio_fx_api_v2_t fake_send_fx_api;
+
 /* The web notify ring: records what the browser would be told. */
 static int notifies = 0;
 static char notify_last_key[128];
@@ -133,6 +146,8 @@ int main(void)
 
     memset(&fake_chain_api, 0, sizeof fake_chain_api);
     fake_chain_api.set_param = fake_chain_set_param;
+    memset(&fake_send_fx_api, 0, sizeof fake_send_fx_api);
+    fake_send_fx_api.set_param = fake_send_fx_set_param;
     shadow_plugin_v2 = &fake_chain_api;
     shadow_chain_slots[0].active = 1;
     shadow_chain_slots[0].instance = (void *)&fake_chain_api;
@@ -176,6 +191,35 @@ int main(void)
     shadow_direct_set_param(0, "send2:fx:move", "1>2");
     CHECK(chain_sets == 0, "send-bus position / shape keys never reach the slot's chain (got '%s')",
           chain_last_key);
+
+    /* A LOADED send position's parameter is set, as a Master FX one is: the
+     * Remote UI's Send A/B tabs and the Mixer's returns strip write these. */
+    shadow_send_fx_slots[0][1].api = &fake_send_fx_api;
+    shadow_send_fx_slots[0][1].instance = (void *)&fake_send_fx_api;
+    reset(); send_fx_sets = 0;
+    shadow_direct_set_param(0, "send1:fx2:mix", "0.7");
+    CHECK(send_fx_sets == 1 && !strcmp(send_fx_last_key, "mix") && !strcmp(send_fx_last_value, "0.7"),
+          "send1:fx2:mix reaches Send A position 2 as 'mix' (sets=%d key='%s')",
+          send_fx_sets, send_fx_last_key);
+    CHECK(chain_sets == 0, "and never the slot's chain");
+    CHECK(notifies == 1 && !strcmp(notify_last_key, "send1:fx2:mix"),
+          "the browser is told (notifies=%d key='%s')", notifies, notify_last_key);
+    CHECK(!flag_raised(), "a position parameter raises no LEVELS flag (the autosave reads it back)");
+
+    reset(); send_fx_sets = 0;
+    shadow_direct_set_param(0, "send1:fx2:bypassed", "1");
+    CHECK(shadow_send_fx_slots[0][1].bypassed == 1 && send_fx_sets == 0,
+          "bypassed is host-side, never handed to the module");
+    shadow_send_fx_slots[0][1].bypassed = 0;
+
+    /* What is LOADED is not this ring's to change. */
+    reset(); send_fx_sets = 0;
+    shadow_direct_set_param(0, "send1:fx2:module", "");
+    shadow_direct_set_param(0, "send1:fx2:name", "x");
+    CHECK(send_fx_sets == 0 && notifies == 0 && shadow_send_fx_slots[0][1].instance,
+          "module / name writes are left to the shadow_param path (sets=%d)", send_fx_sets);
+    shadow_send_fx_slots[0][1].api = NULL;
+    shadow_send_fx_slots[0][1].instance = NULL;
 
     /* The control: an ordinary component key still goes to the chain. */
     reset();

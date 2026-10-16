@@ -77,12 +77,16 @@ func TestWebUILinksCoverChainFXAndMasterFX(t *testing.T) {
 			`{"id":"","path":"/data/UserData/schwung/modules/audio_fx/echo/echo.so"},` +
 			`{"id":"","path":""},{"id":"","path":""},{"id":"","path":""},` +
 			`{"id":"","path":""},{"id":"","path":""}]`,
+		// The send buses are the same shape under their own prefix.
+		"0/send1:modules": `[]`,
+		"0/send2:modules": `[{"id":"","path":""},{"id":"echo","path":"/x/echo/echo.so"}]`,
 	}}
 	got := findModuleWebUILinks(f.get, "echo", "audio_fx", testWebUIBase)
 
 	want := []WebUILink{
 		{Where: "Track 3 FX 2", URL: testWebUIBase + "?component=fx2&schwungStandalone=1&slot=2"},
 		{Where: "Master FX 3", URL: testWebUIBase + "?component=master_fx%3Afx3&schwungStandalone=1&master_fx=1"},
+		{Where: "Send B FX 2", URL: testWebUIBase + "?component=send2%3Afx2&schwungStandalone=1&bus=send2"},
 	}
 	if len(got.Links) != len(want) {
 		t.Fatalf("got %+v, want %+v", got.Links, want)

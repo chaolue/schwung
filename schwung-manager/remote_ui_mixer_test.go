@@ -363,6 +363,9 @@ func (h *mixerHarness) next(what string, want func(map[string]any) bool) map[str
 		if err := wsjson.Read(ctx, h.conn, &m); err != nil {
 			h.t.Fatalf("waiting for %s: %v", what, err)
 		}
+		if os.Getenv("HARNESS_DEBUG") != "" {
+			h.t.Logf("%s <- %v", what, m)
+		}
 		if want(m) {
 			return m
 		}

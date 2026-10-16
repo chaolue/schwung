@@ -226,30 +226,35 @@ func slotInfoFrom(slot uint8, ch slotChain) wsSlotInfo {
 	return info
 }
 
-// masterFxChain is the master bus, positional (entry i IS master_fx:fx(i+1)),
-// never compacted. Known=false: the listing did not complete.
+// masterFxChain is one FX bus (Master FX, Send A or Send B), positional
+// (entry i IS <bus>:fx(i+1)), never compacted. Known=false: the listing did
+// not complete. The name is from when Master FX was the only bus listed.
 type masterFxChain struct {
+	Bus     fxBus
 	Modules []string
 	Known   bool
 }
 
-// readMasterFxChain is ONE read: `master_fx:modules`, the shim's own answer
-// for the whole bus. A shim too old to serve it ANSWERS with an error, and
-// only then are the positions read one by one.
-func readMasterFxChain(get paramGetter) masterFxChain {
-	raw, err := get(0, "master_fx:modules")
+// readMasterFxChain reads the master bus -- see readBusChain.
+func readMasterFxChain(get paramGetter) masterFxChain { return readBusChain(get, masterFxBus) }
+
+// readBusChain is ONE read: `<bus>:modules`, the shim's own answer for the
+// whole bus. A shim too old to serve it ANSWERS with an error, and only then
+// are the positions read one by one.
+func readBusChain(get paramGetter, bus fxBus) masterFxChain {
+	raw, err := get(0, bus.ID+":modules")
 	if err != nil {
 		if !paramAnswered(err) {
-			return masterFxChain{}
+			return masterFxChain{Bus: bus}
 		}
-		return readMasterFxPositions(get)
+		return readBusPositions(get, bus)
 	}
 	var entries []struct {
 		ID   string `json:"id"`
 		Path string `json:"path"`
 	}
 	if json.Unmarshal([]byte(raw), &entries) != nil {
-		return masterFxChain{}
+		return masterFxChain{Bus: bus}
 	}
 	mods := make([]string, masterFxSlotCount)
 	for i := 0; i < len(entries) && i < masterFxSlotCount; i++ {
@@ -259,39 +264,50 @@ func readMasterFxChain(get paramGetter) masterFxChain {
 		}
 		mods[i] = masterFxModuleID(id)
 	}
-	return masterFxChain{Modules: mods, Known: true}
+	return masterFxChain{Bus: bus, Modules: mods, Known: true}
 }
 
-func readMasterFxPositions(get paramGetter) masterFxChain {
+func readBusPositions(get paramGetter, bus fxBus) masterFxChain {
 	mods := make([]string, masterFxSlotCount)
 	for i := range mods {
-		v, err := get(0, masterFxComp(i+1)+":module")
+		v, err := get(0, busComp(bus, i+1)+":module")
 		if err != nil && !paramAnswered(err) {
-			return masterFxChain{}
+			return masterFxChain{Bus: bus}
 		}
 		if err == nil {
 			mods[i] = masterFxModuleID(strings.TrimSpace(v))
 		}
 	}
-	return masterFxChain{Modules: mods, Known: true}
+	return masterFxChain{Bus: bus, Modules: mods, Known: true}
 }
 
 // masterFxComp names position n (1-based): "master_fx:fx3".
-func masterFxComp(n int) string { return "master_fx:fx" + strconv.Itoa(n) }
+func masterFxComp(n int) string { return busComp(masterFxBus, n) }
 
-// loaded lists the master components holding a module, in position order.
+// busComp names a bus's position n (1-based): "send1:fx3".
+func busComp(bus fxBus, n int) string { return bus.ID + ":fx" + strconv.Itoa(n) }
+
+// loaded lists the bus components holding a module, in position order.
 func (m masterFxChain) loaded() []string {
 	var out []string
 	for i, id := range m.Modules {
 		if id != "" {
-			out = append(out, masterFxComp(i+1))
+			out = append(out, busComp(m.bus(), i+1))
 		}
 	}
 	return out
 }
 
+// bus is the chain's bus; a zero value (a literal in a test) is Master FX.
+func (m masterFxChain) bus() fxBus {
+	if m.Bus.ID == "" {
+		return masterFxBus
+	}
+	return m.Bus
+}
+
 func masterFxInfoFrom(m masterFxChain) wsMasterFxInfo {
-	info := wsMasterFxInfo{Type: "master_fx_info", Cap: masterFxSlotCount}
+	info := wsMasterFxInfo{Type: "master_fx_info", Bus: m.bus().ID, Cap: masterFxSlotCount}
 	if !m.Known {
 		info.Unknown = true
 		return info
