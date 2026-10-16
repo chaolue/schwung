@@ -2353,3 +2353,30 @@ rotation; a module's `chain_params` is read once per module id. A write is
 accepted only for a knob the Mixer is showing, within its range. The knob list
 is sent BEFORE values in every flush, because a value for a knob the browser
 has not been told about is dropped there.
+
+### Knobs 1-8 on the Slot tabs are REAL knobs, and a write moves the hardware knob too
+
+The Remote UI's mapped knobs were display strings (`knob_N_value`) whose
+position the browser GUESSED from the text ("45%", "0.50", "LP"), read with
+sixteen retried reads per subscribe. Now one read, the chain's `knob_map`
+(`knob_map_json.h`), names each knob's real parameter and position; the browser
+draws a real knob on that key (range from the component's `chain_params`, value
+from its params) and writes it through `set_param` like any other control.
+
+**A mapping keeps its own accumulator** (`knob_mapping_t.current_value`, where
+the next hardware turn moves FROM), and it changed only on a hardware turn or a
+patch load. Editing the parameter anywhere else — the device's own parameter
+pages, now the browser — left it stale, so the next turn jumped the parameter
+back. `knob_sync_from_write` moves it on every component write, called beside
+`lane_on_set_param` in all three branches of the chain's `set_param`. Hardware
+turns write the module directly (`knob_forward_value`), never through
+`set_param`, so the sync cannot echo a turn into itself; an enum written by name
+leaves the number alone. `tests/host/test_slot_knobs.sh` pins both.
+
+**A hardware turn is on no notify ring**, so the Slot tab follows it by polling
+`knob_map` — once a second for a slot whose tab is open and that has mappings,
+every 5 s for one with none — and a moved knob goes out as an ordinary
+`param_update` on the real key, so the generic control for the same parameter
+follows too. A send DROPPED because the client's previous write was in flight
+(the subscribe can still be streaming) forgets the map, so the next poll resends
+it whole; otherwise a knob recorded as sent would never be sent again.

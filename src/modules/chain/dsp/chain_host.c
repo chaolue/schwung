@@ -16,6 +16,7 @@
 #include <errno.h>
 #include "chain_internal.h"
 #include "chain_modules_json.h"   /* "chain_modules" -- header-only so tests/host can run it */
+#include "knob_map_json.h"        /* "knob_map" -- likewise */
 #include "host/split_voices_parse.h"
 
 
@@ -730,6 +731,7 @@ static void v2_set_param_impl(void *instance, const char *key, const char *val) 
             chain_synth_set_module(inst, val);
         } else {
             lane_on_set_param(inst, "synth", subkey, val);
+            knob_sync_from_write(inst, "synth", subkey, val);
             if (chain_mod_is_target_active(inst, "synth", subkey)) {
                 chain_mod_update_base_from_set_param(inst, "synth", subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, "synth", subkey);
@@ -778,6 +780,7 @@ static void v2_set_param_impl(void *instance, const char *key, const char *val) 
             char fx_id[16];
             chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
             lane_on_set_param(inst, fx_id, subkey, val);
+            knob_sync_from_write(inst, fx_id, subkey, val);
             if (chain_mod_is_target_active(inst, fx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, fx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, fx_id, subkey);
@@ -823,6 +826,7 @@ static void v2_set_param_impl(void *instance, const char *key, const char *val) 
             char mfx_id[16];
             chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
             lane_on_set_param(inst, mfx_id, subkey, val);
+            knob_sync_from_write(inst, mfx_id, subkey, val);
             if (chain_mod_is_target_active(inst, mfx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, mfx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, mfx_id, subkey);
@@ -1250,6 +1254,22 @@ static int v2_get_param_impl(void *instance, const char *key, char *buf, int buf
      */
     if (strcmp(key, "chain_modules") == 0) {
         return chain_modules_json(inst, buf, buf_len);
+    }
+    /* "knob_map" -- Knobs 1-8's mappings and positions in one read; see
+     * knob_map_json.h. */
+    if (strcmp(key, "knob_map") == 0) {
+        int knob[MAX_KNOB_MAPPINGS];
+        const char *target[MAX_KNOB_MAPPINGS], *param[MAX_KNOB_MAPPINGS];
+        float value[MAX_KNOB_MAPPINGS];
+        const int n = inst->knob_mapping_count < MAX_KNOB_MAPPINGS ? inst->knob_mapping_count
+                                                                    : MAX_KNOB_MAPPINGS;
+        for (int i = 0; i < n; i++) {
+            knob[i] = inst->knob_mappings[i].cc - 70;   /* CC 71-78 -> Knob 1-8 */
+            target[i] = inst->knob_mappings[i].target;
+            param[i] = inst->knob_mappings[i].param;
+            value[i] = inst->knob_mappings[i].current_value;
+        }
+        return knob_map_format(buf, buf_len, n, knob, target, param, value);
     }
     /* Master preset queries */
     if (strcmp(key, "master_preset_count") == 0) {

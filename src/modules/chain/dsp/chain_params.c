@@ -1015,6 +1015,36 @@ void knob_forward_value(chain_instance_t *inst, const char *target, const char *
 }
 
 
+/*
+ * A WRITE to a mapped parameter moves that knob's accumulator too.
+ *
+ * A mapping keeps its own `current_value` -- the position the next turn of the
+ * hardware knob moves FROM. It used to change only on a hardware turn or a
+ * patch load, so editing the parameter anywhere else (the device's parameter
+ * pages, the Remote UI) left it stale, and the next turn jumped the parameter
+ * back to wherever the knob last was. Called beside lane_on_set_param for every
+ * component write; hardware turns write the module directly (knob_forward_value)
+ * and never come through here, so this cannot echo one back. An enum written by
+ * NAME leaves the accumulator alone -- it holds a number. RT-safe.
+ */
+void knob_sync_from_write(chain_instance_t *inst, const char *target, const char *param,
+                          const char *val) {
+    if (!inst || !target || !param || !val) return;
+    char *end = NULL;
+    float f = strtof(val, &end);
+    if (end == val || f != f) return;
+    for (int i = 0; i < inst->knob_mapping_count; i++) {
+        knob_mapping_t *m = &inst->knob_mappings[i];
+        if (strcmp(m->param, param) != 0) continue;
+        /* "midi_fx" is the older spelling of the first MIDI FX position. */
+        if (strcmp(m->target, target) != 0 &&
+            !(strcmp(m->target, "midi_fx") == 0 && strcmp(target, "midi_fx1") == 0))
+            continue;
+        m->current_value = f;
+        knob_emit_cc_out(inst, i);
+    }
+}
+
 /* ---- Chain-knob CC out ---------------------------------------------------
  *
  * The input half has shipped for a long time: CC 102-109 on a slot's receive

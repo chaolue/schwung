@@ -59,7 +59,10 @@
             customUI: {},
             // When true, ignore customUI and show the auto-generated parameter
             // UI even though a module web_ui.html is available. Session-only.
-            useDefaultUI: false
+            useDefaultUI: false,
+            // Knobs 1-8's mappings, from slot_knobs: [{knob, comp, param, key}].
+            // null until the server has answered.
+            knobMap: null
         };
     }
 
@@ -319,6 +322,11 @@
 
             case "param_update":
                 handleParamUpdate(slot, msg);
+                break;
+
+            case "slot_knobs":
+                slots[slot].knobMap = msg.knobs || [];
+                if (slot === activeSlot) renderSlot();
                 break;
 
             default:
@@ -1880,55 +1888,47 @@
     // Mapped Knobs section
     // ------------------------------------------------------------------
 
+    // Knobs 1-8, as REAL knobs on the parameters they are mapped to: the range
+    // comes from that component's chain_params, the value from its params, and
+    // a drag writes the parameter like any other control here (the chain then
+    // moves the hardware knob's position to match). Turning the knob on the
+    // Move arrives as an ordinary param_update on the same key.
     function renderMappedKnobs(s) {
-        // Collect knob data from synth component params (knob_N_name/value are slot-level)
-        var knobs = [];
-        var synthParams = s.components.synth.params;
-        for (var i = 1; i <= 8; i++) {
-            var name = synthParams["synth:knob_" + i + "_name"] || synthParams["knob_" + i + "_name"] || "";
-            var value = synthParams["synth:knob_" + i + "_value"] || synthParams["knob_" + i + "_value"] || "";
-            if (name) knobs.push({ index: i, name: name, value: value });
-        }
-        if (knobs.length === 0) return null;
+        var map = s.knobMap || [];
+        if (!map.length) return null;
 
         var section = document.createElement("div");
         section.className = "mapped-knobs-section";
+        section.setAttribute("role", "group");
+        section.setAttribute("aria-label", "Knobs 1 to 8");
 
         var grid = document.createElement("div");
         grid.className = "knob-grid";
-        for (var k = 0; k < knobs.length; k++) {
-            var knob = knobs[k];
-
-            // Parse the display value to get a normalized position for the knob arc.
-            // knob_N_value is a display string like "45%", "0.50", "LP", "127", etc.
-            var numVal = parseFloat(knob.value);
-            var norm = 0.5; // default to midpoint for non-numeric
-            if (!isNaN(numVal)) {
-                // If it looks like a percentage, normalize 0-100 → 0-1
-                if (knob.value.indexOf("%") >= 0) {
-                    norm = Math.max(0, Math.min(1, numVal / 100));
-                } else if (numVal >= 0 && numVal <= 1) {
-                    norm = numVal;
-                } else if (numVal >= 0 && numVal <= 127) {
-                    norm = numVal / 127;
-                } else {
-                    norm = 0.5;
-                }
+        for (var k = 0; k < map.length; k++) {
+            var m = map[k];
+            var compState = s.components[m.comp];
+            var meta = compState ? findParamMeta(compState, m.param) : null;
+            var tile;
+            if (compState && meta && (meta.type === "float" || meta.type === "int" || !meta.type) &&
+                typeof meta.min === "number" && typeof meta.max === "number") {
+                tile = renderKnob(m.comp, compState, m.param, meta, getCompParamValue(compState, m.comp, m.param));
+            } else {
+                // Not drawable as a knob (yet): its component's metadata has not
+                // arrived, or it is not a numeric range. Say what it is.
+                tile = document.createElement("div");
+                tile.className = "knob-container mapped-knob-pending";
+                var v = compState ? getCompParamValue(compState, m.comp, m.param) : undefined;
+                tile.innerHTML = '<div class="knob-label">' + escapeHtml(meta && meta.name ? meta.name : m.param) + '</div>' +
+                    '<div class="knob-value">' + escapeHtml(v !== undefined ? formatValue(v, meta) : "\u2014") + '</div>';
             }
-
-            // Build a simple meta for the SVG rendering
-            var fakeMeta = { min: 0, max: 1, type: "float" };
-
-            var container = document.createElement("div");
-            container.className = "knob-container";
-            container.setAttribute("data-mapped-knob", knob.index);
-
-            container.innerHTML =
-                createKnobSVG("mapped_" + knob.index, fakeMeta, norm) +
-                '<div class="knob-label">' + escapeHtml(knob.name) + '</div>' +
-                '<div class="knob-value" data-mapped-knob-value="' + knob.index + '">' + escapeHtml(knob.value || "-") + '</div>';
-
-            grid.appendChild(container);
+            tile.setAttribute("data-mapped-knob", String(m.knob));
+            var where = COMPONENT_LABELS[m.comp] || m.comp;
+            tile.title = "Knob " + m.knob + " \u00b7 " + where + " \u00b7 " + (meta && meta.name ? meta.name : m.param);
+            var badge = document.createElement("div");
+            badge.className = "mapped-knob-number";
+            badge.textContent = "Knob " + m.knob;
+            tile.insertBefore(badge, tile.firstChild);
+            grid.appendChild(tile);
         }
         section.appendChild(grid);
         return section;

@@ -1969,6 +1969,10 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
   `<comp>_module` reads per poll. A timeout is an error, never "empty"
   (`chain_components.go`). Mixer effect knobs come from
   `capabilities.mixer_params`, else an EXACT `mix`/`dry_wet`/`wet` (guessed).
+- **Mapped knobs are real knobs** (`knob_map`, one read), and a write to a
+  mapped parameter moves the hardware knob's accumulator
+  (`knob_sync_from_write`) — it used to change only on a turn, so editing the
+  parameter elsewhere made the next turn JUMP it back.
 
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's

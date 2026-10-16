@@ -89,6 +89,9 @@ type RemoteUI struct {
 	// remote_ui_rename.go.
 	renames slotRenames
 
+	// knobs is each slot's last-read knob map -- see remote_ui_knobs.go.
+	knobs knobsState
+
 	// knownMods is each slot's last-read module list (pollSlot, subscribe), so
 	// the loops that run often visit LOADED positions only rather than all
 	// seventeen. Guarded by mu.
@@ -348,6 +351,7 @@ func (ru *RemoteUI) Start(ctx context.Context) {
 	go ru.setRingConnectLoop(ctx)
 	go ru.extrasHeartbeatLoop(ctx)
 	go ru.mixerLoop(ctx)
+	go ru.knobsLoop(ctx)
 }
 
 // setRingConnectLoop connects the web param set ring EAGERLY at startup,
@@ -605,17 +609,11 @@ func (ru *RemoteUI) sendSlotSettings(ctx context.Context, c *ruClient, slot uint
 		}
 	}
 
-	// Knob mappings (knob_1_name..knob_8_name, knob_1_value..knob_8_value)
-	for i := 1; i <= 8; i++ {
-		nameKey := fmt.Sprintf("knob_%d_name", i)
-		valKey := fmt.Sprintf("knob_%d_value", i)
-		if name := ru.getParamWithRetry(slot, nameKey, 2); name != "" {
-			params[nameKey] = name
-		}
-		if val := ru.getParamWithRetry(slot, valKey, 2); val != "" {
-			params[valKey] = val
-		}
-	}
+	// Knob mappings: ONE read for all eight (knob_map), which also names the
+	// real parameter each drives. It replaced sixteen retried name/value reads
+	// whose values were display strings the browser could only guess a knob
+	// position from.
+	defer ru.sendSlotKnobs(ctx, c, slot)
 
 	if len(params) > 0 {
 		ru.writeJSON(ctx, c, wsParamUpdate{Type: "param_update", Slot: slot, Params: params})
