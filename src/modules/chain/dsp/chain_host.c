@@ -15,6 +15,7 @@
 #include <sched.h>
 #include <errno.h>
 #include "chain_internal.h"
+#include "chain_modules_json.h"   /* "chain_modules" -- header-only so tests/host can run it */
 #include "host/split_voices_parse.h"
 
 
@@ -1082,6 +1083,17 @@ static void v2_set_param_impl(void *instance, const char *key, const char *val) 
  * looks up the index in the param's options list.
  * Returns the float value, or fallback if conversion fails.
  */
+/* "chain_modules" -- see chain_modules_json.h. */
+static int chain_modules_json(chain_instance_t *inst, char *buf, int buf_len)
+{
+    const char *midi[MAX_MIDI_FX], *fx[MAX_AUDIO_FX];
+    const int nm = inst->midi_fx_count < MAX_MIDI_FX ? inst->midi_fx_count : MAX_MIDI_FX;
+    const int nf = inst->fx_count < MAX_AUDIO_FX ? inst->fx_count : MAX_AUDIO_FX;
+    for (int i = 0; i < nm; i++) midi[i] = inst->current_midi_fx_modules[i];
+    for (int i = 0; i < nf; i++) fx[i] = inst->current_fx_modules[i];
+    return chain_modules_format(buf, buf_len, inst->current_synth_module, midi, nm, fx, nf);
+}
+
 static int v2_get_param_impl(void *instance, const char *key, char *buf, int buf_len) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return -1;
@@ -1226,6 +1238,18 @@ static int v2_get_param_impl(void *instance, const char *key, char *buf, int buf
     }
     if (strcmp(key, "midi_fx_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->midi_fx_count);
+    }
+    /*
+     * "chain_modules" -- every position's module in ONE answer:
+     *   {"synth":"obxd","midi_fx":["arp"],"fx":["freeverb","tape-echo2"]}
+     * Each list is exactly that section's length (midi_fx_count / fx_count),
+     * in position order. The Remote UI polls this instead of 17 per-position
+     * reads (synth, fx1..8, midi_fx1..8), each a ~2.8 ms round trip on the
+     * channel shadow_ui draws with. Refused (-1) rather than truncated: a
+     * short list parses fine and reads as "those positions are empty".
+     */
+    if (strcmp(key, "chain_modules") == 0) {
+        return chain_modules_json(inst, buf, buf_len);
     }
     /* Master preset queries */
     if (strcmp(key, "master_preset_count") == 0) {

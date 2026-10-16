@@ -39,7 +39,17 @@ type WebUILinks struct {
 // in tests.
 type paramGetter func(slot uint8, key string) (string, error)
 
-const webUIChainSlots = 4
+// webUIChainSlots is every chain slot, aux included (SHADOW_CHAIN_INSTANCES).
+const webUIChainSlots = remoteUISlots
+
+// webUISlotLabel names a slot the way the Remote UI's tabs do: Move's four are
+// its tracks, the aux four have no track behind them.
+func webUISlotLabel(slot uint8) string {
+	if slot < 4 {
+		return fmt.Sprintf("Track %d", slot+1)
+	}
+	return fmt.Sprintf("Slot %d", slot+1)
+}
 
 // webUIComponentLabel is "Synth", "FX 3", "MIDI FX 1".
 func webUIComponentLabel(comp string) string {
@@ -127,7 +137,7 @@ func findModuleWebUILinks(get paramGetter, moduleID, componentType, baseURL stri
 				if mods[i] != moduleID {
 					continue
 				}
-				link(fmt.Sprintf("Track %d %s", slot+1, webUIComponentLabel(comp)),
+				link(webUISlotLabel(slot)+" "+webUIComponentLabel(comp),
 					"component="+url.QueryEscape(comp)+
 						"&schwungStandalone=1&slot="+fmt.Sprint(slot))
 			}
