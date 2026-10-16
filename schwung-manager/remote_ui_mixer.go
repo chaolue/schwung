@@ -545,6 +545,8 @@ func (ru *RemoteUI) mixerNotify(ctx context.Context, slot uint8, key, value stri
 	case key == "set_aligned":
 		// shadow_ui finished a set switch. Every slot's sends and the returns
 		// were just restored from the new set, and none of that is notified.
+		// The new set has its own Mixer pins, too.
+		ru.broadcastPins(ctx, -1)
 		if len(ru.mixerClients()) > 0 {
 			ru.mixerScheduleRefresh(ctx, -1, mixerSetSwitchDelay)
 		}

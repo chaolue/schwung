@@ -53,6 +53,9 @@ type mixerFxKnob struct {
 	Int     bool    `json:"int,omitempty"`
 	Unit    string  `json:"unit,omitempty"`
 	Guessed bool    `json:"guessed,omitempty"`
+	// Pinned: put on the strip from a Slot tab (remote_ui_pins.go), not
+	// chosen as the effect's mix.
+	Pinned bool `json:"pinned,omitempty"`
 }
 
 // fxParamMeta is the slice of a chain_params entry a knob needs.
@@ -184,6 +187,7 @@ type mixerFxState struct {
 	read    map[int]bool                // slot -> its module list has been read
 	dirty   map[int]bool                // slot -> knobs changed since the last flush
 	byMod   map[string][]fxKnobTemplate // module id -> templates (definitive reads only)
+	params  map[string][]fxParamMeta    // module id -> its chain_params (definitive reads only)
 	timers  map[int]*time.Timer         // pending module refresh per slot
 	cursor  int                         // backstop: which slot's module list next
 	running sync.WaitGroup
@@ -195,6 +199,7 @@ func (fs *mixerFxState) init() {
 		fs.read = make(map[int]bool)
 		fs.dirty = make(map[int]bool)
 		fs.byMod = make(map[string][]fxKnobTemplate)
+		fs.params = make(map[string][]fxParamMeta)
 		fs.timers = make(map[int]*time.Timer)
 	}
 }
@@ -353,6 +358,32 @@ func (ru *RemoteUI) mixerRefreshModules(ctx context.Context, slot int, get param
 		}
 	}
 
+	// Pinned parameters, after the effects. A pin made on a module that is no
+	// longer in its position is hidden, never pointed at a stranger.
+	have := map[string]bool{}
+	for _, k := range knobs {
+		have[k.Key] = true
+	}
+	for _, pin := range ru.slotPins(slot) {
+		comp, param, _ := strings.Cut(pin.Key, ":")
+		id := mods[comp]
+		if id == "" || (pin.Module != "" && pin.Module != id) || have[pin.Key] {
+			continue
+		}
+		params, ok := ru.moduleParams(id, comp, uint8(slot), get)
+		if !ok {
+			return false
+		}
+		meta, ok := findUsableParam(params, param)
+		if !ok {
+			continue
+		}
+		k := fxKnobTemplate{param: meta}.place(comp, id)
+		k.Pinned = true
+		knobs = append(knobs, k)
+		have[pin.Key] = true
+	}
+
 	fs := &ru.mix.fx
 	fs.mu.Lock()
 	fs.init()
@@ -386,8 +417,36 @@ func (ru *RemoteUI) mixerRefreshModules(ctx context.Context, slot int, get param
 	return true
 }
 
-// mixerFxTemplates returns a module's knob templates: cached per module id,
-// else from its declaration and one chain_params read through position comp.
+// moduleParams returns a module's chain_params, read through position comp
+// once per module id for the life of the manager. ok=false: the read did not
+// complete (never cached, asked again next time).
+func (ru *RemoteUI) moduleParams(id, comp string, slot uint8, get paramGetter) ([]fxParamMeta, bool) {
+	fs := &ru.mix.fx
+	fs.mu.Lock()
+	fs.init()
+	p, ok := fs.params[id]
+	fs.mu.Unlock()
+	if ok {
+		return p, true
+	}
+	raw, err := get(slot, comp+":chain_params")
+	if err != nil {
+		if paramAnswered(err) {
+			return nil, true // answered: this module has no parameters to offer
+		}
+		return nil, false
+	}
+	params, parsed := parseFxParams(raw)
+	if parsed {
+		fs.mu.Lock()
+		fs.params[id] = params
+		fs.mu.Unlock()
+	}
+	return params, true
+}
+
+// mixerFxTemplates returns a module's mix knob templates: cached per module
+// id, else from its declaration and its chain_params.
 func (ru *RemoteUI) mixerFxTemplates(id, comp string, slot uint8, get paramGetter) ([]fxKnobTemplate, bool) {
 	fs := &ru.mix.fx
 	fs.mu.Lock()
@@ -397,21 +456,17 @@ func (ru *RemoteUI) mixerFxTemplates(id, comp string, slot uint8, get paramGette
 	if ok {
 		return t, true
 	}
-	raw, err := get(slot, comp+":chain_params")
-	var params []fxParamMeta
-	if err == nil {
-		params, _ = parseFxParams(raw)
-	} else if !paramAnswered(err) {
+	params, ok := ru.moduleParams(id, comp, slot, get)
+	if !ok {
 		return nil, false
 	}
 	t = pickFxKnobs(moduleMixerParams(ru.basePath, id), params)
-	if err == nil && params != nil {
-		// Only a definitive answer is cached: a failed parse is asked again
-		// next time the slot is read.
-		fs.mu.Lock()
+	fs.mu.Lock()
+	_, definitive := fs.params[id]
+	if definitive {
 		fs.byMod[id] = t
-		fs.mu.Unlock()
 	}
+	fs.mu.Unlock()
 	return t, true
 }
 

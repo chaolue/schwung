@@ -62,7 +62,9 @@
             useDefaultUI: false,
             // Knobs 1-8's mappings, from slot_knobs: [{knob, comp, param, key}].
             // null until the server has answered.
-            knobMap: null
+            knobMap: null,
+            // Keys pinned to the Mixer ("synth:cutoff"), from mixer_pins.
+            pins: []
         };
     }
 
@@ -245,6 +247,11 @@
             case "rename_result":
                 handleRenameResult(msg);
                 return;
+            case "error":
+                if (String(msg.message || "").indexOf("pin_mixer:") === 0) {
+                    announcePin(String(msg.message).slice("pin_mixer:".length).trim());
+                }
+                return;
             default:
                 break;
         }
@@ -327,6 +334,11 @@
             case "slot_knobs":
                 slots[slot].knobMap = msg.knobs || [];
                 if (slot === activeSlot) renderSlot();
+                break;
+
+            case "mixer_pins":
+                slots[slot].pins = msg.keys || [];
+                if (slot === activeSlot) refreshPinButtons();
                 break;
 
             default:
@@ -897,6 +909,8 @@
 
         container.addEventListener("mousedown", onPointerDown);
         container.addEventListener("touchstart", onPointerDown, { passive: false });
+        var pinBtn = makePinButton(compPrefix, key, meta);
+        if (pinBtn) container.appendChild(pinBtn);
 
         return container;
     }
@@ -1306,6 +1320,8 @@
 
             controlWrap.appendChild(slider);
             controlWrap.appendChild(valDisplay);
+            var rowPin = makePinButton(compPrefix, key, meta);
+            if (rowPin) controlWrap.appendChild(rowPin);
         } else {
             var valSpan2 = document.createElement("span");
             valSpan2.className = "param-value-text";
@@ -1882,6 +1898,75 @@
             rename.error = msg.error || "Move refused the rename.";
         }
         if (activeSlot === msg.slot) renderSlotName(true);
+    }
+
+    // ------------------------------------------------------------------
+    // Pinning a parameter to the Mixer
+    //
+    // A numeric knob on a Slot tab can be pinned to that slot's Mixer strip.
+    // Pins belong to the Set and the server owns them: the button sends
+    // pin_mixer and shows what mixer_pins says, never its own guess.
+    // ------------------------------------------------------------------
+
+    var PIN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">' +
+        '<path d="M9.5 1.5l5 5-1.4 1.4-1-1-2.6 2.6.4 3.4-1.4 1.4-2.8-2.8-3.2 3.2-.7-.7 3.2-3.2-2.8-2.8 1.4-1.4 3.4.4 2.6-2.6-1-1z" fill="currentColor"/></svg>';
+
+    function makePinButton(comp, key, meta) {
+        if (typeof activeSlot !== "number") return null;           // chain slots only
+        if (!meta || !(meta.type === "float" || meta.type === "int" || !meta.type) ||
+            typeof meta.min !== "number" || typeof meta.max !== "number") return null;
+        var full = comp + ":" + key;
+        var name = (meta && meta.name) || key;
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "pin-btn";
+        b.setAttribute("data-pin-key", full);
+        b.setAttribute("data-pin-name", name);
+        b.innerHTML = PIN_SVG;
+        // Never start a knob drag from the pin.
+        b.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+        b.addEventListener("touchstart", function (e) { e.stopPropagation(); }, { passive: true });
+        b.onclick = function (e) {
+            e.stopPropagation();
+            var slot = activeSlot;
+            var pinned = (slots[slot].pins || []).indexOf(full) >= 0;
+            send({ type: "pin_mixer", slot: slot, key: full, value: pinned ? "0" : "1" });
+        };
+        paintPinButton(b, (slots[activeSlot].pins || []).indexOf(full) >= 0);
+        return b;
+    }
+
+    function paintPinButton(b, pinned) {
+        var name = b.getAttribute("data-pin-name");
+        b.setAttribute("aria-pressed", pinned ? "true" : "false");
+        b.setAttribute("aria-label", (pinned ? "Unpin " : "Pin ") + name + (pinned ? " from the Mixer" : " to the Mixer"));
+        b.title = pinned ? "Pinned to the Mixer \u2014 click to unpin" : "Pin to the Mixer";
+        b.classList.toggle("pinned", pinned);
+    }
+
+    function refreshPinButtons() {
+        if (typeof activeSlot !== "number") return;
+        var pins = slots[activeSlot].pins || [];
+        var btns = slotContentEl.querySelectorAll("[data-pin-key]");
+        for (var i = 0; i < btns.length; i++) {
+            paintPinButton(btns[i], pins.indexOf(btns[i].getAttribute("data-pin-key")) >= 0);
+        }
+    }
+
+    // A refused pin (four per slot, a parameter that cannot be a fader) is
+    // said out loud and shown briefly; nothing else changes.
+    var pinNotice = null;
+    function announcePin(text) {
+        if (!pinNotice) {
+            pinNotice = document.createElement("div");
+            pinNotice.className = "pin-notice";
+            pinNotice.setAttribute("role", "status");
+            document.body.appendChild(pinNotice);
+        }
+        pinNotice.textContent = text.charAt(0).toUpperCase() + text.slice(1);
+        pinNotice.classList.add("show");
+        clearTimeout(announcePin.timer);
+        announcePin.timer = setTimeout(function () { pinNotice.classList.remove("show"); }, 4000);
     }
 
     // ------------------------------------------------------------------

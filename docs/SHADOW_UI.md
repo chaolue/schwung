@@ -2380,3 +2380,25 @@ every 5 s for one with none — and a moved knob goes out as an ordinary
 follows too. A send DROPPED because the client's previous write was in flight
 (the subscribe can still be streaming) forgets the map, so the next poll resends
 it whole; otherwise a knob recorded as sent would never be sent again.
+
+### Pinning a parameter to the Mixer: per SET, and never onto a stranger
+
+Any numeric knob on a Remote UI Slot tab (a mapped knob, a knob tile, a numeric
+parameter row) has a pin; a pinned parameter appears on that slot's Mixer strip
+under **Pinned**, drawn and written exactly like the effect knobs (range from the
+module's `chain_params`, cached per module id; writes allowed only for what the
+strip shows). At most 4 per slot. `remote_ui_pins.go`.
+
+**Pins belong to the SET**: `set_state/<uuid>/mixer_pins.json`, the uuid from
+line 1 of `active_set.txt`. So they travel with the set — a duplicate gets them,
+because `set_state_copy` copies everything but an exclude list — and a set
+switch (`set_aligned`) re-sends every open Slot tab its set's pins. A missing
+active set is an ERROR, never an empty list, so a pin is never written over a
+file the manager could not find.
+
+**A pin remembers the MODULE it was made on.** If a different module sits in
+that position now, the pin is hidden — `fx2:mix` on a new effect is a different
+control that happens to share a key — and it comes back when that module does.
+The browser's pin buttons show only what the server's `mixer_pins` says, never
+their own guess, and a refusal (the cap, an enum) is announced and changes
+nothing.

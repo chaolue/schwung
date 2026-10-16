@@ -1973,6 +1973,9 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
   mapped parameter moves the hardware knob's accumulator
   (`knob_sync_from_write`) — it used to change only on a turn, so editing the
   parameter elsewhere made the next turn JUMP it back.
+- **Pins are per SET** (`set_state/<uuid>/mixer_pins.json`) and remember the
+  MODULE they were made on — a different module in that position hides the pin
+  rather than driving a stranger's parameter of the same key.
 
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's

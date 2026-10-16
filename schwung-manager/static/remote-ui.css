@@ -1296,3 +1296,95 @@
 .mapped-knob-pending .knob-value {
     color: var(--text-muted);
 }
+
+/* Pin a parameter to the Mixer (Slot tabs). */
+.pin-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0.55;
+}
+
+.pin-btn:hover,
+.pin-btn:focus-visible {
+    opacity: 1;
+    border-color: var(--border);
+}
+
+.pin-btn:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
+}
+
+.pin-btn.pinned {
+    color: var(--accent);
+    opacity: 1;
+}
+
+.param-control .pin-btn {
+    flex: none;
+    margin-left: var(--space-xs);
+}
+
+.pin-notice {
+    position: fixed;
+    left: 50%;
+    bottom: var(--space-lg);
+    z-index: 50;
+    max-width: calc(100vw - 32px);
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text);
+    box-shadow: var(--shadow-lg);
+    font-size: 0.9rem;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(-50%);
+    transition: opacity 0.2s;
+}
+
+.pin-notice.show {
+    opacity: 1;
+}
+
+/* A pinned knob on a Mixer strip: the unpin cross sits by its name. */
+.mixer-pinned {
+    position: relative;
+}
+
+.mixer-unpin {
+    position: absolute;
+    top: -2px;
+    right: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.mixer-unpin:hover,
+.mixer-unpin:focus-visible {
+    color: var(--text);
+    background: var(--bg-card-hover);
+}
+
+.mixer-unpin:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: 1px;
+}

@@ -92,6 +92,9 @@ type RemoteUI struct {
 	// knobs is each slot's last-read knob map -- see remote_ui_knobs.go.
 	knobs knobsState
 
+	// pins serialises the Mixer pins file -- see remote_ui_pins.go.
+	pins pinsState
+
 	// knownMods is each slot's last-read module list (pollSlot, subscribe), so
 	// the loops that run often visit LOADED positions only rather than all
 	// seventeen. Guarded by mu.
@@ -507,6 +510,8 @@ func (ru *RemoteUI) readLoop(ctx context.Context, c *ruClient) {
 			ru.handleSetMixerParam(ctx, c, msg)
 		case "rename_slot":
 			ru.handleRenameSlot(ctx, c, msg)
+		case "pin_mixer":
+			ru.handlePinMixer(ctx, c, msg)
 		default:
 			ru.sendError(ctx, c, "unknown message type: "+msg.Type)
 		}
@@ -553,6 +558,8 @@ func (ru *RemoteUI) handleSubscribe(ctx context.Context, c *ruClient, msg wsMess
 	// populates immediately — otherwise they'd be blocked behind potentially
 	// many seconds of sendInitialParamValues for param-heavy modules.
 	ru.sendSlotSettings(ctx, c, slot)
+	// Which of this slot's parameters are pinned to the Mixer (a file read).
+	ru.sendPins(ctx, c, slot)
 
 	// Send hierarchy and chain_params for the remaining components, plus initial
 	// param values for every component (synth metadata already sent above).
