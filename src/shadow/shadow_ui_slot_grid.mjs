@@ -535,6 +535,14 @@ export const MASTER_KEY_PREFIX = "master_fx:";
  */
 export const MFX_MIDI_CHANNEL_KEY = MASTER_KEY_PREFIX + "midi_channel";
 export const MFX_FILTER_KEY = MASTER_KEY_PREFIX + "filter";
+/* The master bus's own controls, served by the shim (master_bus_set in
+ * shadow_chain_mgmt.c) and saved with the send levels. */
+export const MASTER_BUS_LEVEL_KEY = MASTER_KEY_PREFIX + "level";
+export const MASTER_BUS_MUTED_KEY = MASTER_KEY_PREFIX + "muted";
+export const MASTER_BUS_BYPASS_KEY = MASTER_KEY_PREFIX + "chain_bypassed";
+export const MASTER_BUS_KEYS = [MASTER_BUS_LEVEL_KEY, MASTER_BUS_MUTED_KEY, MASTER_BUS_BYPASS_KEY];
+/* MASTER_BUS_LEVEL_MAX in shadow_chain_mgmt.h: +6 dB, slot Volume's ceiling. */
+export const MASTER_BUS_LEVEL_MAX = 2;
 export const MFX_MIDI_CHANNEL_ALL_WIRE = -1;
 export const MFX_MIDI_CHANNEL_OPTIONS = ["All"].concat(
     Array.from({ length: 16 }, (_, i) => String(i + 1)));
@@ -567,8 +575,13 @@ export function mfxMidiChannelFromIndex(index) {
  * shim_handle_param_special does not serve it either, so the read came back
  * empty and the list's `if (!val) return "100%"` fallback drew a confident
  * fake 100%. A row that reads a lie and writes somewhere else is worse than no
- * row, so it is gone rather than wired up — the master bus level is Move's own
- * volume knob, which already reaches it.
+ * row, so it was removed rather than wired up.
+ *
+ * LEVEL IS BACK, AND THIS TIME THE SHIM SERVES IT: `master_fx:level` (with
+ * `muted` and `chain_bypassed`) is answered by master_bus_set / master_bus_get
+ * in shadow_chain_mgmt.c BEFORE any position routing, so it can never fall
+ * through to position 1's module again. It is a software level after Master
+ * FX and before Move's volume knob, which stays the final output level.
  *
  * MIDI Ch below is the real one: the shim reads master_fx_midi_channel every
  * frame. Do not remove it by symmetry.
@@ -584,6 +597,13 @@ export const MASTER_GRID_PARAMS = [
      * engaged where nothing on Move shows it. Not saved: it starts off. */
     { key: MFX_FILTER_KEY, name: "Filter", type: "float",
       min: -1, max: 1, step: 0.02, default: 0 },
+    /* Formatted like slot Volume: a gain, so 1.0 reads 100%. */
+    { key: MASTER_BUS_LEVEL_KEY, name: "Level", type: "float", min: 0, max: MASTER_BUS_LEVEL_MAX,
+      step: 0.05, default: 1, display_format: ".0%" },
+    { key: MASTER_BUS_MUTED_KEY, name: "Mute", type: "enum", options: ["Off", "On"],
+      short_options: ["OFF", "ON"], default: 0 },
+    { key: MASTER_BUS_BYPASS_KEY, name: "FX Byp", type: "enum", options: ["Off", "On"],
+      short_options: ["OFF", "ON"], default: 0 },
 ];
 
 /** Actions, in the order they appear on the menu page. */

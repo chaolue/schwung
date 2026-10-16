@@ -239,6 +239,17 @@ func TestMixerWriteAllowlist(t *testing.T) {
 		{"send2:to_send2", "12", false, false, false}, // only A feeds B
 		{"synth:cutoff", "0.5", false, false, false},  // not a mixer key
 		{"master_fx:fx1:mix", "0.5", false, false, false},
+		// The returns' mutes and the master bus.
+		{"send1:return_muted", "1", false, true, true},
+		{"send2:return_muted", "2", false, true, false},
+		{"master_fx:level", "1.0000", false, true, true},
+		{"master_fx:level", "2", false, true, true},
+		{"master_fx:level", "2.01", false, true, false}, // +6 dB is the ceiling
+		{"master_fx:level", "NaN", false, true, false},
+		{"master_fx:muted", "1", false, true, true},
+		{"master_fx:chain_bypassed", "0", false, true, true},
+		{"master_fx:chain_bypassed", "on", false, true, false},
+		{"master_fx:volume", "1", false, false, false}, // never a mixer key
 	}
 	for _, c := range cases {
 		perSlot, ok := mixerWriteScope(c.key)
@@ -265,6 +276,10 @@ func TestNormalizeMixerValue(t *testing.T) {
 		{"slot:pan", "abc", "", false},
 		{"slot:muted", "1", "1", true},
 		{"send1:to_send2", "-3", "", false},
+		{"send2:return_muted", "1", "1", true},
+		{"master_fx:muted", "0", "0", true},
+		{"master_fx:level", "0.5000", "0.5000", true},
+		{"master_fx:level", "3", "", false},
 	}
 	for _, c := range cases {
 		got, ok := normalizeMixerValue(c.key, c.in)

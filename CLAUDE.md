@@ -1987,6 +1987,11 @@ send returns and A→B, on the SAME keys as Slot Settings and the E16/EC4 Mixer
   knob's key names its bus, so its value is global and its write needs no slot.
   The web set ring used to DROP a send position's parameter write; it now sets
   it as the Master FX block does.
+- **The master bus has a Level / Mute / FX Bypass and each return a Mute**,
+  served by the shim before position routing (`master_bus_set`) -- an
+  unserved `master_fx:volume` once wrote into position 1's module. Level sits
+  after Master FX and BEFORE the capture views; Move's knob stays the output.
+  Saved in `send_levels.json`, where an absent field is its DEFAULT.
 
 **A manager-installed payload can register a BOOT TARGET, and the registry is
 OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's

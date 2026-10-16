@@ -1228,8 +1228,25 @@
     color: #fff;
 }
 
-.mixer-strip.muted .mixer-fader input[type="range"] {
+.mixer-strip.muted .mixer-fader input[type="range"],
+.mixer-return-col.muted .mixer-fader input[type="range"] {
     opacity: 0.5;
+}
+
+/* A return's fader with its mute under it. */
+.mixer-return-col {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: var(--space-sm);
+    min-width: 0;
+}
+
+/* FX: the whole Master FX chain bypassed -- lit while the effects are OUT. */
+.mixer-bypass.active {
+    background: var(--color-danger);
+    border-color: var(--color-danger);
+    color: #fff;
 }
 
 .mixer-return-faders {

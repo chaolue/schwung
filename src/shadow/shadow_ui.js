@@ -341,7 +341,7 @@ import { locateAudioData, sampleReader, sampleBytesFor } from '/data/UserData/sc
 import '/data/UserData/schwung/shared/param_pages/wav_io_qjs.mjs';
 import { createSlotGridIo, createMasterGridIo,
          MFX_MIDI_CHANNEL_OPTIONS, MFX_MIDI_CHANNEL_KEY, mfxMidiChannelToIndex,
-         mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
+         mfxMidiChannelFromIndex, MASTER_BUS_KEYS, MASTER_BUS_LEVEL_MAX } from './shadow_ui_slot_grid.mjs';
 import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
@@ -4952,6 +4952,12 @@ const MASTER_FX_SETTINGS_ITEMS_BASE = [
      * default and the pre-existing behaviour; narrowing it is opt-in. */
     { key: "master_fx_midi_channel", label: "MIDI Ch", type: "enum",
       options: MFX_MIDI_CHANNEL_OPTIONS },
+    /* The master bus's own level, mute and whole-chain bypass -- served by the
+     * shim (master_fx:level / muted / chain_bypassed), a software level before
+     * Move's volume knob. See MASTER_GRID_PARAMS. */
+    { key: "master_bus:level", label: "Level", type: "float" },
+    { key: "master_bus:muted", label: "Mute", type: "bool" },
+    { key: "master_bus:chain_bypassed", label: "FX Bypass", type: "bool" },
     { key: "mfx_lfo1", label: "LFO 1", type: "action" },
     { key: "mfx_lfo2", label: "LFO 2", type: "action" },
     /* The Custom surface layout's pages -- per set, so here, not in Global
@@ -5665,18 +5671,22 @@ function parseResampleBridgeMode(raw) {
  *
  * Built from fxBus().busLevelKeys rather than from a `kind === "send"` here,
  * so the A-only A->B row is declared once, beside the bus it belongs to. */
-const SEND_LEVEL_ROW_LABELS = { return: "Return", to_send2: "-> Send B" };
+const SEND_LEVEL_ROW_LABELS = { return: "Return", to_send2: "-> Send B", return_muted: "Mute" };
 
 function sendBusLevelItems() {
-    return fxBus().busLevelKeys.map(k => ({
+    /* The return's MUTE comes after the levels: on / off, never a level -- a
+     * "bool" row, which a click toggles (busSwitch). */
+    const keys = fxBus().busLevelKeys;
+    return keys.concat(keys.includes("return") ? ["return_muted"] : []).map(k => ({
         key: "send_level:" + k,
         label: SEND_LEVEL_ROW_LABELS[k] || k,
         /* "int", not a new type: the settings menu's jog-adjust and its
          * click-to-edit toggle are both gated on the existing type names, so a
          * fresh one would draw correctly and respond to nothing. The rows are
          * told apart by busKey. */
-        type: "int",
+        type: k === "return_muted" ? "bool" : "int",
         busKey: k,
+        busSwitch: k === "return_muted",
     }));
 }
 
@@ -15571,6 +15581,18 @@ function saveSendFxChainConfig() {
  * B's last-known-good value just because this pass rewrote the file — start
  * from the existing file and only overwrite the keys that read successfully.
  */
+/* [file field, shim key, is a float, default] -- the switches and the master
+ * level that live beside the send levels in send_levels.json. Unlike a return,
+ * an ABSENT one here is its default: a set saved before these existed must not
+ * inherit the previous set's master mute. */
+const BUS_MIXER_FIELDS = [
+    ["send1_return_muted", "send1:return_muted", false, 0],
+    ["send2_return_muted", "send2:return_muted", false, 0],
+    ["master_level", "master_fx:level", true, 1],
+    ["master_muted", "master_fx:muted", false, 0],
+    ["master_fx_bypassed", "master_fx:chain_bypassed", false, 0],
+];
+
 function saveSendLevels() {
     if (typeof shadow_get_param !== "function") return;
     const levels = {};
@@ -15593,6 +15615,17 @@ function saveSendLevels() {
             if (!Number.isFinite(n)) continue;
             levels[(k === "return") ? `send${bus.send + 1}_return` : "send1_to_send2"] = n;
         }
+    }
+    /* The return MUTES and the master bus's own controls ride in the same file
+     * (the bus mixer's file, whatever its name says). Same rule: a failed read
+     * keeps the field already on disk. */
+    for (const [field, key, isFloat] of BUS_MIXER_FIELDS) {
+        let v = null;
+        try { v = shadow_get_param(0, key); } catch (e) {}
+        if (v === null || v === undefined || v === "") continue;
+        const n = isFloat ? parseFloat(v) : parseInt(v, 10);
+        if (!Number.isFinite(n)) continue;
+        levels[field] = isFloat ? Math.round(n * 10000) / 10000 : n;
     }
     if (Object.keys(levels).length > 0) {
         host_write_file(activeSlotStateDir + "/send_levels.json",
@@ -15715,6 +15748,14 @@ function loadSendFxChainConfigForSet() {
             if (!Number.isFinite(n)) continue;
             shadow_set_param(0, bus.prefix + k, String(n));
         }
+    }
+    /* The mutes and the master bus: ABSENT is the default here (see
+     * BUS_MIXER_FIELDS), so a set from before them starts unmuted at unity
+     * rather than keeping whatever the outgoing set left. */
+    for (const [field, key, isFloat, dflt] of BUS_MIXER_FIELDS) {
+        let n = (field in levels) ? (isFloat ? parseFloat(levels[field]) : parseInt(levels[field], 10)) : dflt;
+        if (!Number.isFinite(n)) n = dflt;
+        shadow_set_param(0, key, String(n));
     }
 }
 
@@ -16967,6 +17008,9 @@ function masterGridIoFor() {
          */
         writeParam: (key, value) => {
             setSlotParam(0, key, value);
+            /* The master bus's level / mute / bypass are saved with the send
+             * levels, flushed off the knob like them. */
+            if (MASTER_BUS_KEYS.includes(key)) sendLevelsDirty = true;
             if (key === MFX_MIDI_CHANNEL_KEY) {
                 const wire = parseInt(value, 10);
                 cachedMasterFxMidiChannel = Number.isFinite(wire) ? wire : -1;
@@ -17022,7 +17066,12 @@ function sendSettingsGridParams() {
         key: bus.prefix + k,
         name: SEND_LEVEL_ROW_LABELS[k] || k,
         type: "int", min: 0, max: SEND_LEVEL_MAX, step: 1, default: 0,
-    }));
+    })).concat(bus.busLevelKeys.includes("return") ? [{
+        /* The return's mute: a switch, as slot Mute is. Only where there is
+         * a return to mute. */
+        key: bus.prefix + "return_muted", name: "Mute", type: "enum",
+        options: ["Off", "On"], short_options: ["OFF", "ON"], default: 0,
+    }] : []);
 }
 
 function sendSettingsGridIo() {
@@ -23680,11 +23729,18 @@ function getMasterFxSettingValue(setting) {
         if (raw === null || raw === "") return "--";
         return MFX_MIDI_CHANNEL_OPTIONS[mfxMidiChannelToIndex(raw)];
     }
+    if (setting.key.startsWith("master_bus:")) {
+        const raw = shadow_get_param(0, "master_fx:" + setting.key.slice(11));
+        if (raw === null || raw === "") return "--";
+        if (setting.key === "master_bus:level") return Math.round(parseFloat(raw) * 100) + "%";
+        return parseInt(raw, 10) ? "On" : "Off";
+    }
     if (setting.busKey) {
         /* Same three-answer rule: "--" is "the read did not complete", not a
          * level of zero. Writing a zero back from a failed read would silence a
          * send the user had turned up. */
         const raw = sendBusLevelRead(setting.busKey);
+        if (raw !== null && setting.busSwitch) return raw ? "On" : "Off";
         return (raw === null) ? "--" : String(raw);
     }
     return "-";
@@ -23737,12 +23793,32 @@ function adjustMasterFxSetting(setting, delta) {
         return;
     }
 
+    if (setting.key.startsWith("master_bus:")) {
+        const key = "master_fx:" + setting.key.slice(11);
+        const raw = shadow_get_param(0, key);
+        if (raw === null || raw === "") return;   /* never step from a failed read */
+        let next;
+        if (setting.key === "master_bus:level") {
+            next = Math.max(0, Math.min(MASTER_BUS_LEVEL_MAX, Math.round((parseFloat(raw) + delta * 0.05) * 100) / 100));
+        } else {
+            next = parseInt(raw, 10) ? 0 : 1;   /* a switch: any press or detent flips it */
+        }
+        shadow_set_param(0, key, String(next));
+        saveSendLevels();
+        return;
+    }
+
     if (setting.busKey) {
         const cur = sendBusLevelRead(setting.busKey);
         /* A failed read must not produce a write — see the MIDI Ch branch
          * above. Stepping from a value nobody saw is how a send ends up at a
          * level the user did not choose, and it would then be persisted. */
         if (cur === null) return;
+        if (setting.busSwitch) {
+            shadow_set_param(0, fxBus().prefix + setting.busKey, cur ? "0" : "1");
+            saveSendLevels();
+            return;
+        }
         /* SEND_LEVEL_STEP, not 1: the range is 0..127 and a detent per unit
          * makes a full sweep 127 turns of the jog. */
         sendBusLevelWrite(setting.busKey, cur + delta * SEND_LEVEL_STEP);

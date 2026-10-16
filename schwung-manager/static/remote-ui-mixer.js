@@ -25,6 +25,7 @@
     var SLOTS = 8;            // SHADOW_CHAIN_INSTANCES: Move's four, then the aux four
     var MOVE_SLOTS = 4;       // SHADOW_MOVE_SLOTS: the ones paired with a Move track
     var VOLUME_MAX = 4;       // slot:volume clamp in the shim: +12 dB
+    var MASTER_MAX = 2;       // master_fx:level, MASTER_BUS_LEVEL_MAX: +6 dB
     var SEND_MAX = 127;       // BUS_MIX_SEND_LEVEL_MAX; a send is level/127, linear
     var FADER_STEPS = 1000;
     var DB_FLOOR = -48;       // the bottom of the dB-linear part of the fader
@@ -63,6 +64,7 @@
 
     var volumeTaper = makeTaper(VOLUME_MAX); // slot faders, to +12 dB
     var returnTaper = makeTaper(1);          // return faders, to 0 dB (127)
+    var masterTaper = makeTaper(MASTER_MAX); // the master bus fader, to +6 dB
 
     // "−6.0 dB", "+0.0 dB" is written "0.0 dB", silence is "−∞ dB".
     function formatDb(g) {
@@ -87,6 +89,12 @@
             min: 0, max: FADER_STEPS, step: 1, vertical: true, unity: Math.round(volumeTaper.toPos(1) * FADER_STEPS),
             toInput: function (v) { return Math.round(volumeTaper.toPos(parseFloat(v)) * FADER_STEPS); },
             toWire: function (n) { return volumeTaper.toGain(n / FADER_STEPS).toFixed(4); },
+            text: function (v) { return formatDb(parseFloat(v)); }
+        },
+        master: {  // master_fx:level, linear 0..2, on a tapered vertical fader
+            min: 0, max: FADER_STEPS, step: 1, vertical: true, unity: Math.round(masterTaper.toPos(1) * FADER_STEPS),
+            toInput: function (v) { return Math.round(masterTaper.toPos(parseFloat(v)) * FADER_STEPS); },
+            toWire: function (n) { return masterTaper.toGain(n / FADER_STEPS).toFixed(4); },
             text: function (v) { return formatDb(parseFloat(v)); }
         },
         ret: {     // send<N>:return, 0..127, on a tapered vertical fader
@@ -317,8 +325,19 @@
             if (strip) strip.classList.toggle("muted", known(id(slot, "slot:muted")) && model[id(slot, "slot:muted")] === "1");
         }
 
+        // The returns' and the master's muted look, as a slot strip has.
+        function paintBusMutes() {
+            if (!rootEl) return;
+            var cols = rootEl.querySelectorAll("[data-mute-key]");
+            for (var i = 0; i < cols.length; i++) {
+                var mid = id(null, cols[i].getAttribute("data-mute-key"));
+                cols[i].classList.toggle("muted", known(mid) && model[mid] === "1");
+            }
+        }
+
         function refreshOne(cid) {
             if (!attached()) return;
+            if (cid.indexOf("g|") === 0) paintBusMutes();
             var ctl = controls[cid];
             if (ctl && !held(ctl)) paintSlider(ctl);
             if (selects[cid]) paintChoice(selects[cid]);
@@ -334,6 +353,7 @@
             for (var sc in selects) paintChoice(selects[sc]);
             for (var t in toggles) paintToggle(toggles[t]);
             for (var s = 0; s < SLOTS; s++) paintStrip(s);
+            paintBusMutes();
             if (noticeEl) {
                 var msg = "";
                 if (!synced) msg = "Loading mixer…";
@@ -675,18 +695,36 @@
             // columns cut every name short), then the two return faders.
             strip.appendChild(busFxBox("send1", "Send A effects"));
             strip.appendChild(busFxBox("send2", "Send B effects"));
+            // Each return's fader, with its mute under it.
             var faders = el("div", "mixer-return-faders");
-            faders.appendChild(slider(null, "send1:return", "ret", "Return A", "Return A level"));
-            faders.appendChild(slider(null, "send2:return", "ret", "Return B", "Return B level"));
+            // One call per control, keys written out: test_remote_ui_mixer.sh
+            // checks them against the server's list.
+            var col = function (muteKey, fader, mute) {
+                var c = el("div", "mixer-return-col");
+                c.setAttribute("data-mute-key", muteKey);
+                c.appendChild(fader);
+                var btns = el("div", "mixer-buttons");
+                btns.appendChild(mute);
+                c.appendChild(btns);
+                return c;
+            };
+            faders.appendChild(col("send1:return_muted",
+                slider(null, "send1:return", "ret", "Return A", "Return A level"),
+                toggle(null, "send1:return_muted", "M", "Mute return A", "mixer-mute")));
+            faders.appendChild(col("send2:return_muted",
+                slider(null, "send2:return", "ret", "Return B", "Return B level"),
+                toggle(null, "send2:return_muted", "M", "Mute return B", "mixer-mute")));
             strip.appendChild(faders);
             return strip;
         }
 
-        // Master FX: the master bus's effect mixes and anything pinned from
-        // the Master FX tab. There is no master level here -- that is Move's
-        // own volume knob.
+        // Master: the master bus's effect mixes and anything pinned from the
+        // Master FX tab, then its level -- a software level after Master FX and
+        // before Move's volume knob, which stays the final output -- its mute,
+        // and FX, which bypasses the whole Master FX chain.
         function masterStrip() {
             var strip = el("section", "mixer-strip mixer-master");
+            strip.setAttribute("data-mute-key", "master_fx:muted");
             strip.setAttribute("aria-labelledby", "mixer-master-title");
             var head = el("header", "mixer-strip-head");
             var h = el("h3", "mixer-strip-title", "Master");
@@ -696,10 +734,17 @@
             strip.appendChild(head);
             strip.appendChild(busFxBox("master_fx", "Master FX effects"));
             var empty = el("p", "mixer-empty text-muted",
-                "Nothing here. A Master FX effect's mix appears when it is loaded; pin more from the Master FX tab.");
+                "No effects pinned. A Master FX effect's mix appears when it is loaded; pin more from the Master FX tab.");
             empty.hidden = true;
             fxEmpty.master_fx = empty;
             strip.appendChild(empty);
+            strip.appendChild(slider(null, "master_fx:level", "master", "Level", "Master level"));
+            var btns = el("div", "mixer-buttons");
+            btns.appendChild(toggle(null, "master_fx:muted", "M", "Mute the master bus", "mixer-mute"));
+            var byp = toggle(null, "master_fx:chain_bypassed", "FX", "Bypass all Master FX", "mixer-bypass");
+            byp.title = "Bypass all Master FX";
+            btns.appendChild(byp);
+            strip.appendChild(btns);
             return strip;
         }
 

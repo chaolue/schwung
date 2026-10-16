@@ -2451,6 +2451,22 @@ read -- so the manager treats them as one thing with three prefixes
   the same per-Set file, beside `"0".."7"`.
 - **Pop-outs and module-page links** use `bus=send1` for a send
   (`schwung-remote-api.js`); Master FX keeps `master_fx=1`.
+- **The master bus has its own level, mute and chain bypass**, and each return
+  a mute (`master_fx:level` 0..2 / `muted` / `chain_bypassed`,
+  `send<N>:return_muted`). The shim serves the master three in
+  `master_bus_set` / `master_bus_get`, BEFORE any position routing -- an
+  unserved `master_fx:volume` once fell through to position 1 and was written
+  into that module as its own parameter, which is why the old row was removed.
+  The level and mute glide after Master FX and before the capture views, so a
+  recording hears them (as it hears slot levels) and Move's volume knob stays
+  the final output; the chain bypass is every position's own bypass at once
+  (still processing, so tails survive). A return mute glides after the send's
+  chain, so its stem and A->B follow it like the return level. All five are
+  saved in `send_levels.json` -- the extended UI flag word is full, so web
+  writes reuse `SEND_LEVELS_DIRTY` -- and, unlike a return level, an ABSENT
+  field restores its DEFAULT on a set change, so a set cannot inherit the
+  previous one's master mute. Master FX Settings and a send's Settings carry
+  them on both the grid and the list.
 - **A failed LAST read dropped the whole final batch** of a component's values
   on subscribe (`sendInitialParamValues`: a `continue` jumped the flush). Found
   by the first send test, whose module's last parameter had no value; it applied

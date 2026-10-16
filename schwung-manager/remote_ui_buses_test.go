@@ -242,6 +242,20 @@ func TestBusTabsAndMixerStrips(t *testing.T) {
 		t.Fatalf("pins file: %s", raw)
 	}
 
+	// ---- The master bus's level, mute and bypass, and a return's mute ----
+	for _, w := range [][2]string{{"master_fx:level", "0.5000"}, {"master_fx:muted", "1"},
+		{"master_fx:chain_bypassed", "1"}, {"send2:return_muted", "1"}} {
+		mixer.send(map[string]any{"type": "set_mixer_param", "key": w[0], "value": w[1]})
+		waitFor("0/" + w[0] + "=" + w[1])
+	}
+	mixer.send(map[string]any{"type": "set_mixer_param", "key": "master_fx:level", "value": "2.5"})
+	mixer.next("past +6 dB", errorWith("bad value"))
+	// The device's answer, from the notify ring, reaches the Mixer as a global.
+	ru.mixerNotify(ctx, 0, "master_fx:muted", "1")
+	mixer.next("master mute shown", func(m map[string]any) bool { v, _ := globalVal(m, "master_fx:muted"); return v == "1" })
+	ru.mixerNotify(ctx, 0, "send2:return_muted", "1")
+	mixer.next("return B mute shown", func(m map[string]any) bool { v, _ := globalVal(m, "send2:return_muted"); return v == "1" })
+
 	// Unpinning from the Mixer: no slot, the key names the strip.
 	mixer.send(map[string]any{"type": "pin_mixer", "key": "send1:fx1:wet", "value": "0"})
 	mixer.next("send A's default unpinned", func(m map[string]any) bool {

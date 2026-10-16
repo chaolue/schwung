@@ -121,6 +121,18 @@ static void reset(void)
     ctrl.ui_flags_ext = 0;
 }
 
+/* One GET through the serve; answers into param.value. */
+static void serve_get(uint8_t slot, const char *key)
+{
+    static uint32_t gid = 50000;
+    memset(&param, 0, sizeof param);
+    param.slot = slot;
+    snprintf(param.key, sizeof param.key, "%s", key);
+    param.request_id = ++gid;
+    __atomic_store_n(&param.request_type, 2, __ATOMIC_RELEASE);
+    shadow_inprocess_handle_param_request();
+}
+
 /* One SET through the shadow_param serve, the way shadow_ui sends it. */
 static void serve_set(uint8_t slot, const char *key, const char *value)
 {
@@ -261,6 +273,86 @@ int main(void)
     shadow_direct_set_param(2, "slot:muted", "1");
     CHECK(ui_state.slot_muted[2] == 1, "and slot:muted (got %u)", ui_state.slot_muted[2]);
     CHECK(notifies == 2, "both are notified (got %d)", notifies);
+
+    /* ---- a return's MUTE: both routers, and read back ---------------- */
+    reset();
+    shadow_send_return_level[0] = 100;
+    shadow_direct_set_param(0, "send1:return_muted", "1");
+    CHECK(shadow_send_return_muted[0] == 1 && shadow_send_return_level[0] == 100,
+          "web send1:return_muted mutes Send A and leaves its level (muted=%d level=%d)",
+          shadow_send_return_muted[0], shadow_send_return_level[0]);
+    CHECK(flag_raised() && notifies == 1 && chain_sets == 0,
+          "flagged for saving, told to the browser, kept off the chain");
+    serve_get(0, "send1:return_muted");
+    CHECK(param.error == 0 && !strcmp(param.value, "1"), "and reads back 1 (got '%s')", param.value);
+    reset();
+    serve_set(0, "send2:return_muted", "1");
+    CHECK(shadow_send_return_muted[1] == 1 && !flag_raised(),
+          "the serve sets Send B's mute too, without the web flag");
+    serve_set(0, "send2:return_muted", "0");
+    CHECK(shadow_send_return_muted[1] == 0, "and clears it");
+
+    /* ---- the MASTER BUS's own level / mute / chain bypass -------------- */
+    static audio_fx_api_v2_t fake_mfx_api;
+    memset(&fake_mfx_api, 0, sizeof fake_mfx_api);
+    fake_mfx_api.set_param = fake_send_fx_set_param;
+    shadow_master_fx_slots[0].api = &fake_mfx_api;
+    shadow_master_fx_slots[0].instance = (void *)&fake_mfx_api;
+
+    reset(); send_fx_sets = 0;
+    shadow_direct_set_param(0, "master_fx:level", "0.5");
+    CHECK(fabsf(shadow_master_bus_level - 0.5f) < 1e-6f, "web master_fx:level sets the bus level (got %f)",
+          (double)shadow_master_bus_level);
+    CHECK(send_fx_sets == 0 && chain_sets == 0,
+          "and never reaches Master FX position 1 as its module's parameter (sets=%d)", send_fx_sets);
+    CHECK(flag_raised() && notifies == 1 && !strcmp(notify_last_key, "master_fx:level"),
+          "flagged for saving and told to the browser");
+    shadow_direct_set_param(0, "master_fx:level", "9");
+    CHECK(shadow_master_bus_level == MASTER_BUS_LEVEL_MAX, "clamped to +6 dB (got %f)",
+          (double)shadow_master_bus_level);
+    shadow_direct_set_param(0, "master_fx:level", "nan");
+    CHECK(shadow_master_bus_level == 0.0f, "a NaN is silence, not a NaN gain");
+
+    reset(); send_fx_sets = 0;
+    serve_set(0, "master_fx:muted", "1");
+    serve_set(0, "master_fx:chain_bypassed", "1");
+    serve_set(0, "master_fx:level", "1.25");
+    CHECK(shadow_master_bus_muted == 1 && shadow_master_fx_chain_bypassed == 1 &&
+          fabsf(shadow_master_bus_level - 1.25f) < 1e-6f && send_fx_sets == 0,
+          "the serve sets all three, and none reaches the module (sets=%d)", send_fx_sets);
+    serve_get(0, "master_fx:level");
+    CHECK(!strcmp(param.value, "1.2500"), "master_fx:level reads back (got '%s')", param.value);
+    serve_get(0, "master_fx:muted");
+    CHECK(!strcmp(param.value, "1"), "master_fx:muted reads back (got '%s')", param.value);
+    serve_get(0, "master_fx:chain_bypassed");
+    CHECK(!strcmp(param.value, "1"), "master_fx:chain_bypassed reads back (got '%s')", param.value);
+    shadow_master_fx_slots[0].api = NULL;
+    shadow_master_fx_slots[0].instance = NULL;
+
+    /* ---- the boot restore reads them from send_levels.json ------------- */
+    {
+        char dir[] = "/tmp/test_web_send_levelsXXXXXX";
+        if (mkdtemp(dir)) {
+            char path[300];
+            snprintf(path, sizeof path, "%s/send_levels.json", dir);
+            FILE *f = fopen(path, "w");
+            fputs("{\n  \"send1_return\": 64,\n  \"send2_return_muted\": 1,\n"
+                  "  \"master_level\": 0.8,\n  \"master_muted\": 0,\n  \"master_fx_bypassed\": 0\n}\n", f);
+            fclose(f);
+            shadow_send_return_muted[0] = 1;   /* absent in the file: kept */
+            shadow_send_return_muted[1] = 0;
+            shadow_master_bus_muted = 1;
+            shadow_master_fx_chain_bypassed = 1;
+            shadow_send_levels_restore(dir);
+            CHECK(shadow_send_return_level[0] == 64 && shadow_send_return_muted[1] == 1 &&
+                  shadow_send_return_muted[0] == 1, "returns and their mutes restored");
+            CHECK(fabsf(shadow_master_bus_level - 0.8f) < 1e-6f && shadow_master_bus_muted == 0 &&
+                  shadow_master_fx_chain_bypassed == 0, "the master bus restored (level %f)",
+                  (double)shadow_master_bus_level);
+            unlink(path);
+            rmdir(dir);
+        }
+    }
 
     printf("test_web_send_levels: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

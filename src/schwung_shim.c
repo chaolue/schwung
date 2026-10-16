@@ -3693,6 +3693,24 @@ skip_la_rebuild:
         if (sb == 0)
             align_capture_record(&g_align_capture, 5, send_out[0], FRAMES_PER_BLOCK * 2);
 
+        /* THE RETURN MUTE, after the send's chain and before everything that
+         * reads its output: the send stem and the master add below, and -- on
+         * the next iteration -- the A->B feed, which is post-A's-fader like the
+         * return level. A glide, not a step, so muting a live reverb does not
+         * click; the level itself is untouched, so unmuting returns to it. */
+        {
+            static float ret_gain[SEND_BUSES] = { 1.0f, 1.0f };
+            const float t = shadow_send_return_muted[sb] ? 0.0f : 1.0f;
+            if (ret_gain[sb] != 1.0f || t != 1.0f) {
+                for (int f = 0; f < FRAMES_PER_BLOCK; f++) {
+                    ret_gain[sb] += (t - ret_gain[sb]) * SHADOW_MIX_SMOOTH;
+                    send_out[sb][2 * f]     = (int16_t)lroundf((float)send_out[sb][2 * f] * ret_gain[sb]);
+                    send_out[sb][2 * f + 1] = (int16_t)lroundf((float)send_out[sb][2 * f + 1] * ret_gain[sb]);
+                }
+                if (fabsf(ret_gain[sb] - t) < 1e-4f) ret_gain[sb] = t;
+            }
+        }
+
         /* THE SEND STEM, tapped here and nowhere else.
          *
          * It has to be the return EXACTLY as the master bus receives it, or
@@ -3762,11 +3780,16 @@ skip_la_rebuild:
     /* Apply master FX chain. Under non-rebuild, MFX processes ME only; under
      * rebuild_from_la, mailbox contains reconstructed ME tracks and MFX
      * processes mailbox (Task 8 revisits). */
+    /* The chain bypass (master_fx:chain_bypassed) is every position's own
+     * bypass at once: each still processes, so a reverb's tail keeps running
+     * and un-bypassing resumes cleanly. */
+    const int mfx_chain_bypassed = shadow_master_fx_chain_bypassed;
     for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[fx];
         if (!(s->instance && s->api && s->api->process_block)) continue;
+        const int mfx_byp = s->bypassed || mfx_chain_bypassed;
         int16_t mfx_dry[FRAMES_PER_BLOCK * 2];
-        if (s->bypassed) {
+        if (mfx_byp) {
             memcpy(mfx_dry, fx_target, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
         }
         /* Timed inside the `continue` guard above, so an empty slot costs
@@ -3780,7 +3803,7 @@ skip_la_rebuild:
                           (mfx_t1.tv_nsec - mfx_t0.tv_nsec) / 1000;
         spi_mfx_sum[fx] += mfx_us;
         if (mfx_us > spi_mfx_max[fx]) spi_mfx_max[fx] = mfx_us;
-        if (s->bypassed) {
+        if (mfx_byp) {
             memcpy(fx_target, mfx_dry, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
         }
     }
@@ -3788,6 +3811,30 @@ skip_la_rebuild:
     /* Tick Master FX LFOs after processing so updated params apply next block.
      * This mirrors the legacy in-process mix path behavior. */
     shadow_master_fx_lfo_tick(FRAMES_PER_BLOCK);
+
+    /* THE MASTER BUS LEVEL AND MUTE (master_fx:level / master_fx:muted): a
+     * software fader after Master FX and before Move's volume knob, which stays
+     * the final output level. Here, before the capture views are built below,
+     * so Skipback, the sampler and the resample bridge record what is heard,
+     * as they do slot levels. fx_target is Schwung's bus without Move->Schwung
+     * and the whole rebuilt mix with it. Glided like a slot fader; unity and
+     * unmuted costs one comparison. */
+    {
+        static float mbus_gain = 1.0f;
+        const float t = shadow_master_bus_muted ? 0.0f : shadow_master_bus_level;
+        if (mbus_gain != 1.0f || t != 1.0f) {
+            for (int f = 0; f < FRAMES_PER_BLOCK; f++) {
+                mbus_gain += (t - mbus_gain) * SHADOW_MIX_SMOOTH;
+                for (int c = 0; c < 2; c++) {
+                    float v = (float)fx_target[2 * f + c] * mbus_gain;
+                    if (v > 32767.0f) v = 32767.0f;
+                    if (v < -32768.0f) v = -32768.0f;
+                    fx_target[2 * f + c] = (int16_t)lroundf(v);
+                }
+            }
+            if (fabsf(mbus_gain - t) < 1e-4f) mbus_gain = t;
+        }
+    }
 
     /* Sum ME bus (after FX) into mailbox at master volume level.
      * Move's audio in mailbox is already at mv; ME needs mv applied here.

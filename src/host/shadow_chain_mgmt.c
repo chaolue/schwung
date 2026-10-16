@@ -122,6 +122,10 @@ host_api_v1_t shadow_host_api;
  * keeps an unused send free in the mix path. */
 master_fx_slot_t shadow_send_fx_slots[SEND_BUSES][SEND_FX_SLOTS];
 volatile int shadow_send_return_level[SEND_BUSES];
+volatile int shadow_send_return_muted[SEND_BUSES];
+volatile float shadow_master_bus_level = 1.0f;
+volatile int shadow_master_bus_muted = 0;
+volatile int shadow_master_fx_chain_bypassed = 0;
 volatile int shadow_send_a_to_b;
 volatile int shadow_scene_return_ov[SEND_BUSES] = { -1, -1 };
 volatile int shadow_scene_a_to_b_ov = -1;
@@ -2828,6 +2832,42 @@ static void fx_boot_restore_one(const char *state_path, const fx_boot_target_t *
  * Absent file, unparseable file and absent key all leave the BSS zero standing.
  * That is the only safe reading: a level this function invented would be a
  * level nobody set, on a bus that may have a reverb in it. */
+/* The master bus's own controls ("master_fx:level" / "muted" /
+ * "chain_bypassed"; see shadow_chain_mgmt.h). Shared by the shadow_param serve,
+ * the web set ring and the boot restore, so the three cannot disagree about a
+ * range. Returns 1 when `param` names one of them. RT-safe: plain stores. */
+static int master_bus_set(const char *param, const char *value)
+{
+    if (strcmp(param, "level") == 0) {
+        float v = strtof(value, NULL);
+        if (!(v >= 0.0f)) v = 0.0f;            /* NaN too */
+        if (v > MASTER_BUS_LEVEL_MAX) v = MASTER_BUS_LEVEL_MAX;
+        shadow_master_bus_level = v;
+        return 1;
+    }
+    if (strcmp(param, "muted") == 0) {
+        shadow_master_bus_muted = (value[0] && atoi(value)) ? 1 : 0;
+        return 1;
+    }
+    if (strcmp(param, "chain_bypassed") == 0) {
+        shadow_master_fx_chain_bypassed = (value[0] && atoi(value)) ? 1 : 0;
+        return 1;
+    }
+    return 0;
+}
+
+/* The read half: the value's length, or -1 when `param` is not one of them. */
+static int master_bus_get(const char *param, char *out, size_t cap)
+{
+    if (strcmp(param, "level") == 0)
+        return snprintf(out, cap, "%.4f", (double)shadow_master_bus_level);
+    if (strcmp(param, "muted") == 0)
+        return snprintf(out, cap, "%d", shadow_master_bus_muted ? 1 : 0);
+    if (strcmp(param, "chain_bypassed") == 0)
+        return snprintf(out, cap, "%d", shadow_master_fx_chain_bypassed ? 1 : 0);
+    return -1;
+}
+
 static void shadow_send_levels_restore(const char *state_dir) {
     char path[256];
     snprintf(path, sizeof(path), "%s/send_levels.json", state_dir);
@@ -2859,6 +2899,26 @@ static void shadow_send_levels_restore(const char *state_dir) {
             if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
             shadow_send_a_to_b = v;
         }
+    }
+    /* The mutes and the master bus's controls live in the same file. An
+     * absent field keeps the boot default (unmuted, unity, not bypassed). */
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        char key[40];
+        snprintf(key, sizeof(key), "\"send%d_return_muted\"", sb + 1);
+        const char *k = strstr(buf, key);
+        const char *c = k ? strchr(k, ':') : NULL;
+        if (c) shadow_send_return_muted[sb] = atoi(c + 1) ? 1 : 0;
+    }
+    {
+        const char *k = strstr(buf, "\"master_level\"");
+        const char *c = k ? strchr(k, ':') : NULL;
+        if (c) master_bus_set("level", c + 1);
+        k = strstr(buf, "\"master_muted\"");
+        c = k ? strchr(k, ':') : NULL;
+        if (c) shadow_master_bus_muted = atoi(c + 1) ? 1 : 0;
+        k = strstr(buf, "\"master_fx_bypassed\"");
+        c = k ? strchr(k, ':') : NULL;
+        if (c) shadow_master_fx_chain_bypassed = atoi(c + 1) ? 1 : 0;
     }
 }
 
@@ -4201,6 +4261,11 @@ static int shadow_lanes_plock_from_write(uint8_t slot, const char *key,
  * stores, and both callers are on the callback. */
 static int send_bus_level_set(int send_idx, const char *param, const char *value)
 {
+    /* The mute is not a level: no scene lock, no clamp, just on or off. */
+    if (strcmp(param, "return_muted") == 0) {
+        shadow_send_return_muted[send_idx] = (value[0] && atoi(value)) ? 1 : 0;
+        return 1;
+    }
     const int is_return = strcmp(param, "return") == 0;
     if (!is_return && strcmp(param, "to_send2") != 0) return 0;
     char t[16];
@@ -4243,6 +4308,19 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
          * leaves mfx_slot at -1 and is dropped below — which used to be the
          * SILENT failure a cap raise produced here, since nothing logs it. */
         master_fx_route_param_key(fx_key, MASTER_FX_SLOTS, &mfx_slot, &param_key);
+
+        /* The master bus's own level / mute / chain bypass (the Remote UI's
+         * Master strip). Flagged to shadow_ui like a send level, which saves
+         * them in the same file and cannot know about a write it did not make. */
+        if (mfx_slot < 0 && master_bus_set(fx_key, value)) {
+            shadow_control_t *ctrl = host.shadow_control_ptr ? *host.shadow_control_ptr : NULL;
+            if (ctrl) {
+                ctrl->ui_flags_ext |= (uint16_t)(SHADOW_UI_FLAG_SEND_LEVELS_DIRTY >>
+                                                 SHADOW_UI_FLAG_EXT_SHIFT);
+            }
+            web_set_changed(slot, key, value);
+            return;
+        }
 
         if (mfx_slot >= 0) {
             master_fx_slot_t *mfx = &shadow_master_fx_slots[mfx_slot];
@@ -5713,6 +5791,11 @@ void shadow_inprocess_handle_param_request(void) {
                     /* Armed: its read answers the lock. */
                     shadow_param->error = 0;
                     shadow_param->result_len = scene_n;
+                } else if (!is_set && strcmp(send_param, "return_muted") == 0) {
+                    snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                             shadow_send_return_muted[send_idx] ? 1 : 0);
+                    shadow_param->error = 0;
+                    shadow_param->result_len = strlen(shadow_param->value);
                 } else if (!is_set && strcmp(send_param, "return") == 0) {
                     snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
                              shadow_send_return_level[send_idx]);
@@ -6198,6 +6281,31 @@ void shadow_inprocess_handle_param_request(void) {
         has_slot_prefix = master_fx_route_param_key(fx_key, MASTER_FX_SLOTS,
                                                     &mfx_slot, &param_key);
         if (!has_slot_prefix) { mfx_slot = 0; param_key = fx_key; }
+
+        /* The master bus's own controls: served HERE, never handed to Master
+         * FX position 1 as that module's parameter -- which is exactly what an
+         * unserved "master_fx:volume" once did. */
+        if (!has_slot_prefix) {
+            int handled = 0;
+            if (req_type == 1) {
+                handled = master_bus_set(param_key, shadow_param->value);
+                if (handled) {
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 0;
+                }
+            } else {
+                int n = master_bus_get(param_key, shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                if (n >= 0) {
+                    handled = 1;
+                    shadow_param->error = 0;
+                    shadow_param->result_len = n;
+                }
+            }
+            if (handled) {
+                shadow_param_publish_response(req_id);
+                return;
+            }
+        }
 
         /* Delegate shim-specific params (resample_bridge, link_audio_*, jack:*, suspend_overtake) */
         if (!has_slot_prefix && host.handle_param_special) {

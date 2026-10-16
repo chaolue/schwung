@@ -807,17 +807,17 @@ const mkSendSettingsMenu = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs",
 /* Mirrors SEND_LEVEL_ROW_LABELS in shadow_ui.js, the way FX_BUS_STUBS mirrors
    FX_BUSES -- a label that changes in one and not the other is a picture that
    stops meaning what its row name says. */
-const SEND_LEVEL_ROW_LABELS_STUB = { return: "Return", to_send2: "-> Send B" };
+const SEND_LEVEL_ROW_LABELS_STUB = { return: "Return", to_send2: "-> Send B", return_muted: "Mute" };
 
 const sendSettingsCases = [];
 const addSendSettings = (id, o) => sendSettingsCases.push({
   id, bus: FX_BUS_STUBS[o.bus], sel: o.sel, levels: o.levels || null,
 });
 /* Send A: both rows, cursor on each in turn. */
-addSendSettings("settings/send1/sel-return",     { bus: "send1", sel: 0, levels: { return: 100, to_send2: 40 } });
-addSendSettings("settings/send1/sel-to-send2",   { bus: "send1", sel: 1, levels: { return: 100, to_send2: 40 } });
-/* Send B: one row only -- it has no -> Send C, so its list is shorter. */
-addSendSettings("settings/send2/sel-return",     { bus: "send2", sel: 0, levels: { return: 64 } });
+addSendSettings("settings/send1/sel-return",     { bus: "send1", sel: 0, levels: { return: 100, to_send2: 40, return_muted: 0 } });
+addSendSettings("settings/send1/sel-to-send2",   { bus: "send1", sel: 1, levels: { return: 100, to_send2: 40, return_muted: 0 } });
+/* Send B: no -> Send C, so its list is shorter; its return is MUTED. */
+addSendSettings("settings/send2/sel-return",     { bus: "send2", sel: 0, levels: { return: 64, return_muted: 1 } });
 /* A level whose read did not complete prints "--", never a zero -- same rule
    the settings BAND on the chain diagram follows for the same key. */
 addSendSettings("settings/send1/unread",         { bus: "send1", sel: 0, levels: null });
