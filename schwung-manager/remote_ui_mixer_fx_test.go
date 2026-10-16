@@ -124,6 +124,9 @@ type tableShim struct {
 	mu   sync.Mutex
 	vals map[string]string // "slot/key" -> value; absent = answered error
 	sets []string          // "slot/key=value"
+	// settings: answer every slot / LFO setting with "0", as a device does --
+	// otherwise the subscribe path retries each one and takes seconds.
+	settings bool
 }
 
 func (ts *tableShim) set(k, v string) { ts.mu.Lock(); ts.vals[k] = v; ts.mu.Unlock() }
@@ -167,7 +170,11 @@ func (ts *tableShim) serve(ctx context.Context, t *testing.T, path string) {
 				ts.vals[k] = val
 				b[paramOffError] = 0
 				binary.LittleEndian.PutUint32(b[paramOffResultLen:], 0)
-			} else if v, ok := ts.vals[k]; ok {
+			} else if v, ok := ts.vals[k]; ok || (ts.settings && (strings.HasPrefix(key, "slot:") ||
+				strings.HasPrefix(key, "lfo"))) {
+				if !ok {
+					v = "0"
+				}
 				copy(b[paramOffValue:], v+"\x00")
 				b[paramOffError] = 0
 				binary.LittleEndian.PutUint32(b[paramOffResultLen:], uint32(len(v)))

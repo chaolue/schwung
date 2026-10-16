@@ -1549,6 +1549,7 @@ CHAIN_INTERNAL int format_param_value(chain_param_info_t *param, float value, ch
 CHAIN_INTERNAL int is_smoothable_float(const char *val, float *out_value);
 CHAIN_INTERNAL chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *target, const char *param, const char *val_str);
+CHAIN_INTERNAL void knob_sync_from_write(chain_instance_t *inst, const char *target, const char *param, const char *val);
 
 /* Echo one chain knob's current value to the external port as CC 102-109 on
  * the slot's receive channel. No-op unless the patch opts in via knob_cc_out.
