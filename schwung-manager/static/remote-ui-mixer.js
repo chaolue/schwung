@@ -109,6 +109,39 @@
         }
     };
 
+    // An effect knob's kind, from the range the module declares. The input is
+    // integer steps across [min, max] (at most FADER_STEPS of them); the wire
+    // carries the module's own units. A 0..1 range or a "%" unit reads as a
+    // percentage, as the device shows it.
+    function fxKind(knob) {
+        var span = knob.max - knob.min;
+        var steps = Math.max(1, Math.min(FADER_STEPS, Math.round(span / (knob.step > 0 ? knob.step : span / 100))));
+        var decimals = knob.int ? 0 : Math.max(0, Math.min(4, Math.ceil(-Math.log(span / steps) / Math.LN10)));
+        var percent = knob.unit === "%" || (knob.min === 0 && knob.max === 1);
+        return {
+            name: "fx", min: 0, max: steps, step: 1, vertical: false, unity: null,
+            toInput: function (v) {
+                var f = parseFloat(v);
+                if (!isFinite(f)) return 0;
+                return Math.round((Math.max(knob.min, Math.min(knob.max, f)) - knob.min) / span * steps);
+            },
+            toWire: function (n) {
+                var f = knob.min + n / steps * span;
+                return knob.int ? String(Math.round(f)) : f.toFixed(decimals);
+            },
+            text: function (v) {
+                var f = parseFloat(v);
+                if (!isFinite(f)) return "\u2014";
+                if (percent) {
+                    var pct = knob.unit === "%" ? f : (f - knob.min) / span * 100;
+                    return Math.round(pct) + "%";
+                }
+                return (knob.int ? String(Math.round(f)) : f.toFixed(Math.min(decimals, 2))) +
+                       (knob.unit ? " " + knob.unit : "");
+            }
+        };
+    }
+
     // ------------------------------------------------------------------
     // The tab
     // ------------------------------------------------------------------
@@ -124,6 +157,8 @@
         var controls = {};       // id -> control (sliders)
         var toggles = {};        // id -> { button, label }
         var names = [];          // per-slot name element
+        var fxKnobs = {};        // slot ("0".."7") -> the server's knob list; absent = not read
+        var fxBoxes = [];        // per-slot container the effect knobs are drawn in
         var noticeEl = null;
 
         function id(slot, key) { return (slot === null ? "g" : String(slot)) + "|" + key; }
@@ -157,12 +192,21 @@
                 model = {};          // absent means unknown
                 synced = true;
                 if (typeof msg.live === "boolean") live = msg.live;
+                fxKnobs = msg.fx || {};
+                for (var fs = 0; fs < SLOTS; fs++) renderFx(fs);
                 merge(msg);
                 refreshAll();
                 return;
             }
             if (msg.type !== "mixer_update") return;
             if (typeof msg.live === "boolean") live = msg.live;
+            // Knobs before values: a value is only drawn on a knob that exists.
+            if (msg.fx) {
+                for (var sk in msg.fx) {
+                    fxKnobs[sk] = msg.fx[sk];
+                    renderFx(parseInt(sk, 10));
+                }
+            }
             var changed = merge(msg);
             if (typeof msg.live === "boolean") { refreshAll(); return; }
             for (var i = 0; i < changed.length; i++) refreshOne(changed[i]);
@@ -173,6 +217,8 @@
         function reset() {
             model = {};
             synced = false;
+            fxKnobs = {};
+            for (var rs = 0; rs < SLOTS; rs++) renderFx(rs);
             live = false;
             refreshAll();
         }
@@ -315,7 +361,8 @@
         }
 
         function slider(slot, key, kindName, label, ariaLabel) {
-            var kind = KINDS[kindName];
+            var kind = (typeof kindName === "string") ? KINDS[kindName] : kindName;
+            if (typeof kindName !== "string") kindName = kind.name;
             var ctl = {
                 id: id(slot, key), slot: slot, key: key, kind: kind,
                 touching: false, holdUntil: 0, pending: null, timer: null, settle: null
@@ -392,7 +439,7 @@
                 // Two taps without movement: a fader to 0 dB, a pan to centre,
                 // a send to off. Never through a jump -- see above.
                 var now = Date.now();
-                if (now - lastTap < 350) {
+                if (now - lastTap < 350 && kind.unity !== null) {
                     lastTap = 0;
                     setFromHand(ctl, kind.unity);
                 } else {
@@ -433,6 +480,41 @@
             return b;
         }
 
+        // One knob per effect mix the server found for this slot. Rebuilt only
+        // when the slot's knob LIST changes; values update in place like any
+        // other control.
+        function renderFx(slot) {
+            var box = fxBoxes[slot];
+            if (!box) return;
+            for (var cid in controls) {
+                if (controls[cid].fx && controls[cid].slot === slot) {
+                    clearTimeout(controls[cid].timer);
+                    clearTimeout(controls[cid].settle);
+                    delete controls[cid];
+                }
+            }
+            box.textContent = "";
+            var list = fxKnobs[String(slot)] || [];
+            box.hidden = list.length === 0;
+            if (!list.length) return;
+            box.appendChild(el("div", "mixer-fx-title", "Effects"));
+            for (var i = 0; i < list.length; i++) {
+                var k = list[i];
+                var pos = k.comp.replace("fx", "FX ");
+                var label = k.module + " " + k.name.toLowerCase();
+                var wrap = slider(slot, k.key, fxKind(k), label,
+                    "Slot " + (slot + 1) + " " + pos + " " + k.module + " " + k.name);
+                var ctl = controls[id(slot, k.key)];
+                if (ctl) ctl.fx = true;
+                var lab = wrap.querySelector(".mixer-label");
+                lab.title = "Audio " + pos + " \u00b7 " + k.module + " \u00b7 " + k.name +
+                    (k.guessed ? " (the Mixer picked this parameter by its name)" : "");
+                if (k.guessed) wrap.classList.add("mixer-guessed");
+                box.appendChild(wrap);
+                if (attached()) paintSlider(controls[id(slot, k.key)]);
+            }
+        }
+
         function slotStrip(slot) {
             var n = slot + 1;
             var aux = slot >= MOVE_SLOTS;
@@ -453,6 +535,11 @@
 
             strip.appendChild(slider(slot, "buses:main_send1", "send", "Send A", "Slot " + n + " send A"));
             strip.appendChild(slider(slot, "buses:main_send2", "send", "Send B", "Slot " + n + " send B"));
+            var fxBox = el("div", "mixer-fx");
+            fxBox.setAttribute("role", "group");
+            fxBox.setAttribute("aria-label", "Slot " + n + " effects");
+            fxBoxes[slot] = fxBox;
+            strip.appendChild(fxBox);
             strip.appendChild(slider(slot, "slot:pan", "pan", "Pan", "Slot " + n + " pan"));
             strip.appendChild(slider(slot, "slot:volume", "volume", "Level", "Slot " + n + " level"));
 
@@ -485,6 +572,7 @@
             controls = {};
             toggles = {};
             names = [];
+            fxBoxes = [];
             rootEl = el("div", "mixer");
             rootEl.setAttribute("role", "group");
             rootEl.setAttribute("aria-label", "Mixer");
@@ -494,6 +582,7 @@
             container.appendChild(noticeEl);
 
             for (var s = 0; s < SLOTS; s++) rootEl.appendChild(slotStrip(s));
+            for (var fs2 = 0; fs2 < SLOTS; fs2++) renderFx(fs2);
             rootEl.appendChild(returnsStrip());
             container.appendChild(rootEl);
 
@@ -512,6 +601,7 @@
         formatDb: formatDb,
         formatPan: formatPan,
         KINDS: KINDS,
+        fxKind: fxKind,
         VOLUME_MAX: VOLUME_MAX,
         SEND_MAX: SEND_MAX
     };

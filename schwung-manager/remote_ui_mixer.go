@@ -261,6 +261,18 @@ func (m *mixerStore) putRead(k, v string, since uint64) bool {
 	return true
 }
 
+// del forgets a key (a knob that went away).
+func (m *mixerStore) del(k string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.init()
+	if _, ok := m.vals[k]; ok {
+		delete(m.vals, k)
+		m.seq++
+	}
+	delete(m.dirty, k)
+}
+
 // get returns a stored value.
 func (m *mixerStore) get(k string) (string, bool) {
 	m.mu.Lock()
@@ -314,6 +326,11 @@ type wsMixer struct {
 	// Live: whether /schwung-ui could be read. Without it there is no volume,
 	// mute, solo or name; sent on every mixer_state and whenever it changes.
 	Live *bool `json:"live,omitempty"`
+	// FX: each slot's effect knobs ("0".."7" -> knobs). In mixer_state, every
+	// slot whose modules have been read; in mixer_update, a slot's WHOLE list
+	// whenever it changed. A slot absent here has not changed (update) or not
+	// been read yet (state). Values ride in Slots under each knob's real key.
+	FX map[string][]mixerFxKnob `json:"fx,omitempty"`
 }
 
 // mixerMessage turns store keys into the wire shape.
@@ -374,10 +391,13 @@ type mixerState struct {
 	// inflight counts scheduled refreshes and running backstop reads, so a
 	// shutdown (or a test) can wait for the param channel to go quiet.
 	inflight sync.WaitGroup
+
+	// fx is the effect knobs -- see remote_ui_mixer_fx.go.
+	fx mixerFxState
 }
 
 // waitIdle blocks until no refresh or backstop read is pending or running.
-func (ms *mixerState) waitIdle() { ms.inflight.Wait() }
+func (ms *mixerState) waitIdle() { ms.inflight.Wait(); ms.fx.running.Wait() }
 
 func (ms *mixerState) kickChan() chan struct{} {
 	ms.kickOnce.Do(func() { ms.kickCh = make(chan struct{}, 1) })
@@ -454,6 +474,22 @@ func (ru *RemoteUI) handleUnsubscribeMixer(c *ruClient) {
 func (ru *RemoteUI) handleSetMixerParam(ctx context.Context, c *ruClient, msg wsMessage) {
 	perSlot, ok := mixerWriteScope(msg.Key)
 	if !ok {
+		// An effect knob the Mixer is showing on that slot -- and only that.
+		if msg.Slot != nil {
+			if knob, shown := ru.mix.fx.knob(int(*msg.Slot), msg.Key); shown {
+				if !validFxWrite(knob, msg.Value) {
+					ru.sendError(ctx, c, fmt.Sprintf("set_mixer_param: bad value %q for %s", msg.Value, msg.Key))
+					return
+				}
+				if !ru.requireShm(ctx, c) {
+					return
+				}
+				if err := ru.setParam(*msg.Slot, msg.Key, msg.Value); err != nil {
+					ru.sendError(ctx, c, "set_mixer_param failed: "+err.Error())
+				}
+				return
+			}
+		}
 		ru.sendError(ctx, c, "set_mixer_param: not a mixer key: "+msg.Key)
 		return
 	}
@@ -484,6 +520,17 @@ func (ru *RemoteUI) handleSetMixerParam(ctx context.Context, c *ruClient, msg ws
 // mixerNotify takes one notify-ring change. Called for every change the ring
 // carries; anything that is not a mixer value is ignored here.
 func (ru *RemoteUI) mixerNotify(ctx context.Context, slot uint8, key, value string) {
+	if int(slot) < mixerSlots {
+		if knob, ok := ru.mix.fx.knob(int(slot), key); ok {
+			if v, ok := normalizeFxValue(knob, value); ok && ru.mix.store.put(mixerStoreKey(int(slot), key), v) {
+				ru.mix.kick()
+			}
+			return
+		}
+		if mixerFxModuleKey(key) && len(ru.mixerClients()) > 0 {
+			ru.mixerScheduleModules(ctx, int(slot), mixerModulesDelay)
+		}
+	}
 	switch {
 	case containsKey(mixerSlotParamKeys, key):
 		if v, ok := normalizeMixerValue(key, value); ok && int(slot) < mixerSlots {
@@ -536,7 +583,17 @@ func (ru *RemoteUI) mixerScheduleRefresh(ctx context.Context, slot int, delay ti
 		if ctx.Err() != nil {
 			return
 		}
+		// What the slot(s) hold first -- it decides which effect knobs exist.
+		get := ru.blockingGetterIfShm()
+		for s := 0; s < mixerSlots; s++ {
+			if slot < 0 || s == slot {
+				ru.mixerRefreshModules(ctx, s, get)
+			}
+		}
 		ru.mixerRead(ctx, mixerReadKeys(slot))
+		if get != nil {
+			ru.mixerReadFx(ctx, ru.mix.fx.keys(slot), get)
+		}
 	})
 }
 
@@ -568,16 +625,28 @@ func (ru *RemoteUI) mixerRead(ctx context.Context, keys []mixerKeyRef) {
 	}
 }
 
-// mixerBackstop reads ONE param-channel value, the next in round-robin order,
-// with TryGetParam: if the channel is busy this second, it waits for the next.
-// Fifteen keys at one a second is every value re-checked every 15 s, for a
-// steady cost of one read a second.
-func (ru *RemoteUI) mixerBackstop() {
+// mixerBackstopKeys is the backstop's rotation: every value read over the
+// param channel, every effect knob, and each slot's module list ("#modules").
+func (ru *RemoteUI) mixerBackstopKeys() []mixerKeyRef {
+	keys := mixerReadKeys(-1)
+	keys = append(keys, ru.mix.fx.keys(-1)...)
+	for s := 0; s < mixerSlots; s++ {
+		keys = append(keys, mixerKeyRef{s, "#modules"})
+	}
+	return keys
+}
+
+// mixerBackstop does ONE thing from the rotation -- a value read, or one
+// slot's module list -- with TryGetParam: if the channel is busy this second,
+// it waits for the next. The rotation is ~35 entries, so each value and each
+// slot's effects are re-checked about every half minute, for a steady cost of
+// one read a second.
+func (ru *RemoteUI) mixerBackstop(ctx context.Context) {
 	ms := &ru.mix
 	if !ms.backstopBusy.CompareAndSwap(false, true) {
 		return
 	}
-	keys := mixerReadKeys(-1)
+	keys := ru.mixerBackstopKeys()
 	k := keys[ms.cursor%len(keys)]
 	ms.cursor++
 	ms.inflight.Add(1)
@@ -588,16 +657,26 @@ func (ru *RemoteUI) mixerBackstop() {
 		if shm == nil {
 			return
 		}
+		get := tryGetter(shm)
+		if k.key == "#modules" {
+			ru.mixerRefreshModules(ctx, k.slot, get)
+			return
+		}
 		slot := uint8(0)
 		if k.slot >= 0 {
 			slot = uint8(k.slot)
 		}
 		since := ms.store.begin()
-		raw, served, err := shm.TryGetParam(slot, k.key)
-		if v, ok := normalizeMixerValue(k.key, raw); served && err == nil && ok {
-			if ms.store.putRead(k.storeKey(), v, since) {
-				ms.kick()
-			}
+		raw, err := get(slot, k.key)
+		if err != nil {
+			return
+		}
+		v, ok := normalizeMixerValue(k.key, raw)
+		if knob, isFx := ms.fx.knob(k.slot, k.key); isFx {
+			v, ok = normalizeFxValue(knob, raw)
+		}
+		if ok && ms.store.putRead(k.storeKey(), v, since) {
+			ms.kick()
 		}
 	}()
 }
@@ -629,7 +708,7 @@ func (ru *RemoteUI) mixerLoop(ctx context.Context) {
 
 		if now := time.Now(); now.Sub(lastBackstop) >= mixerBackstopEvery {
 			lastBackstop = now
-			ru.mixerBackstop()
+			ru.mixerBackstop(ctx)
 		}
 
 		ru.mixerFlush(ctx, clients, live)
@@ -677,16 +756,22 @@ func boolDigit(b bool) string {
 // not had one, or missed a delta) or what changed since the last flush.
 func (ru *RemoteUI) mixerFlush(ctx context.Context, clients []*ruClient, live bool) {
 	ms := &ru.mix
+	// Knobs before values: a value that arrives for a knob the client has not
+	// been told about yet is dropped there, so the knob list must lead.
+	fxDirty := ms.fx.takeDirty()
 	dirty := ms.store.takeDirty()
 	liveChanged := live != ms.lastLive
 	ms.lastLive = live
 
 	var update *wsMixer
-	if len(dirty) > 0 || liveChanged {
+	if len(dirty) > 0 || liveChanged || len(fxDirty) > 0 {
 		u := mixerMessage("mixer_update", dirty)
 		if liveChanged {
 			l := live
 			u.Live = &l
+		}
+		if len(fxDirty) > 0 {
+			u.FX = fxDirty
 		}
 		update = &u
 	}
@@ -702,6 +787,7 @@ func (ru *RemoteUI) mixerFlush(ctx context.Context, clients []*ruClient, live bo
 				f := mixerMessage("mixer_state", ms.store.snapshot())
 				l := live
 				f.Live = &l
+				f.FX = ms.fx.snapshot()
 				full = &f
 			}
 			if ru.writeJSONTry(ctx, c, full) {

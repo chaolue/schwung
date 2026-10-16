@@ -70,6 +70,20 @@ check(M.formatDb(0.5) === "−6.0 dB", "half is -6.0 dB");
 check(M.formatDb(4) === "+12.0 dB", "the ceiling is +12.0 dB");
 check(M.formatPan(0) === "C" && M.formatPan(0.004) === "C", "centre is C (the device's text)");
 check(M.formatPan(-0.35) === "L 35" && M.formatPan(1) === "R 100", "sides are L/R n");
+// Effect knobs: the module's own range, in its own units, both ends exact.
+const pk = M.fxKind({ min: 0, max: 1, step: 0.05 });
+check(pk.max === 20 && pk.toWire(0) === "0.00" && pk.toWire(20) === "1.00", "a 0..1 knob in 0.05 steps: " + pk.max + " " + pk.toWire(20));
+check(pk.toInput("0.35") === 7 && pk.text("0.35") === "35%", "0.35 reads as step 7 and 35%");
+const ik = M.fxKind({ min: 0, max: 100, step: 1, int: true, unit: "%" });
+check(ik.toWire(100) === "100" && ik.toWire(37) === "37" && ik.text("37") === "37%", "an int 0..100 % knob");
+const dk = M.fxKind({ min: -12, max: 12, step: 0, unit: "dB" });
+check(dk.toInput("-12") === 0 && dk.toInput("12") === dk.max && parseFloat(dk.toWire(dk.max)) === 12, "a bipolar knob with no step");
+check(dk.toInput("99") === dk.max && dk.toInput("nope") === 0, "out-of-range and junk values are clamped, not thrown");
+check(pk.unity === null, "an effect knob has no double-tap reset");
+for (let i = 0; i <= pk.max; i++) {
+  const v = parseFloat(pk.toWire(i));
+  check(v >= 0 && v <= 1 && pk.toInput(pk.toWire(i)) === i, "0..1 knob round-trips at " + i);
+}
 console.log("  mixer maths: " + n + " checks OK");
 NODE
 

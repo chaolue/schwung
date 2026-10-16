@@ -121,6 +121,7 @@ for keys anywhere in `module.json`).
 | `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
 | `forks_processes` | Module creates child **processes** (not threads) to do its DSP, as JE-8086 does. See below. |
 | `standalone` | A **tool** that is a whole program: selecting it runs `<module dir>/standalone` through `launch-standalone.sh`, which restarts Move when the program exits. See below. |
+| `mixer_params` | Audio FX: the parameters the Remote UI **Mixer** puts on a slot's strip, as `chain_params` keys without the component prefix — e.g. `["wet"]`. At most 4. See "Your effect on the Mixer" below. |
 
 > **Where these are read.** `src/host/module_manager.c` (used by the
 > standalone host runtime) currently parses only `claims_master_knob`,
@@ -689,6 +690,29 @@ That means:
   moved are sent. One push per component at a time: two overlapping reads
   answer in channel order, and the browser then gets an older value after a
   newer one, which presents as a playhead jumping backwards.
+
+### Your effect on the Mixer (`mixer_params`)
+
+The Remote UI's **Mixer** tab gives every loaded audio FX a knob on its slot's
+strip, for its dry/wet. Declare which parameter that is:
+
+```json
+"capabilities": { "component_type": "audio_fx", "mixer_params": ["wet"] }
+```
+
+- Keys are your `chain_params` keys **without** the `fxN:` prefix. The knob takes
+  its name, range, step and unit from that `chain_params` entry, so a key must be
+  a numeric (`float` / `int`) parameter with a `min` and a `max`; an enum or an
+  unknown key is skipped.
+- Up to **4** keys, drawn in the order given. A declaration is used exactly as
+  written: nothing is guessed beside it.
+- **Without** a declaration, the Mixer takes the first parameter named exactly
+  `mix`, `dry_wet` or `wet`, in that order, and marks the knob as guessed (a
+  dotted underline). Exact names only — `early_mix` or `carrier_mix` are never
+  picked. An effect with none of these gets no knob, which is right for an EQ or
+  a compressor.
+- Read from `module.json` on disk, and your `chain_params` is read once per
+  module, so declaring it costs the device nothing.
 
 ### Remote UI for overtake tools (the Tool tab)
 

@@ -1148,6 +1148,41 @@
     touch-action: none;
 }
 
+/* A strip's effect knobs: one per effect mix the Mixer found. */
+.mixer-fx {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: var(--space-xs);
+    border-top: 1px solid var(--border);
+}
+
+.mixer-fx[hidden] {
+    display: none;
+}
+
+.mixer-fx-title {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.mixer-fx .mixer-label {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+/* Picked by its NAME ("mix", "wet", "dry_wet"), not declared by the module. */
+.mixer-guessed .mixer-label {
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+}
+
 .mixer-buttons {
     display: flex;
     gap: var(--space-xs);

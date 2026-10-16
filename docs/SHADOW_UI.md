@@ -2326,3 +2326,30 @@ is safe because the write touches only the instance's patch LIST, whose readers
 (`patch_count`, `patch_name_N`, `load_patch`) all arrive on the param channel,
 and the channel is held until the job is answered. shadow_ui waits up to 3 s for
 the answer (`writePatchLibrary`) rather than the default 100 ms.
+
+### The Remote UI knows every position, from one read per slot
+
+The Remote UI covered four of a slot's seventeen positions (synth, fx1, fx2,
+midi_fx1) and four of Master FX's eight, so a module anywhere else loaded, ran
+and had no controls in the browser. It covers all of them now — but reading
+seventeen `<comp>_module` keys per slot per poll would have made it the busiest
+reader on the channel shadow_ui draws with. So what a slot holds is ONE read:
+the chain's `chain_modules` (`{"synth":..,"midi_fx":[..],"fx":[..]}`,
+`chain_modules_json.h`, refused rather than truncated — a short list reads as
+"those positions are empty"), and Master FX is the existing `master_fx:modules`.
+An older chain falls back to per-position reads only when the key is not
+served; a timeout is an error, never "empty" (`chain_components.go`). The
+module page's web UI links had the same four-slot gap and use the same reader.
+
+**The Mixer's effect knobs** (`remote_ui_mixer_fx.go`): each loaded audio FX
+gets one, on the parameter its module declares in `capabilities.mixer_params`,
+else the first EXACT `mix` / `dry_wet` / `wet` in its `chain_params`, marked
+guessed. Measured over the 40 fleet audio FX: 26 `mix`, 3 `wet`, 1 `dry_wet`,
+10 with no single mix — and `early_mix`, `noise_mix`, `carrier_mix`,
+`fx1_amount` are real parameters a substring match would have picked. Which
+effects a slot holds is re-read on subscribe, when the notify ring shows a
+module or chain-shape write on that slot, and in the one-read-a-second backstop
+rotation; a module's `chain_params` is read once per module id. A write is
+accepted only for a knob the Mixer is showing, within its range. The knob list
+is sent BEFORE values in every flush, because a value for a knob the browser
+has not been told about is dropped there.
