@@ -839,11 +839,6 @@
             h.id = "mixer-master-title";
             head.appendChild(h);
             head.appendChild(el("div", "mixer-strip-name", "Master FX"));
-            // Move's own master volume, after this bus: shown, never set. In
-            // the header, so the strip's fader stays in line with the others.
-            moveVolEl = el("div", "mixer-move-volume text-muted", "");
-            moveVolEl.title = "Move's own volume knob, after the master bus. Schwung can show it but not set it.";
-            head.appendChild(moveVolEl);
             strip.appendChild(head);
             strip.appendChild(busFxBox("master_fx", "Master FX effects"));
             var empty = el("p", "mixer-empty text-muted",
@@ -851,8 +846,16 @@
             empty.hidden = true;
             fxEmpty.master_fx = empty;
             strip.appendChild(empty);
-            strip.appendChild(withMeter(slider(null, "master_fx:level", "master", "Level", "Master level"),
-                                        "master", "the master bus"));
+            var level = withMeter(slider(null, "master_fx:level", "master", "Level", "Master level"),
+                                  "master", "the master bus");
+            // Move's own master volume, after this bus: shown, never set.
+            // Directly above the Level label -- inside the fader's control,
+            // whose spare height sits ABOVE its label, so the fader itself
+            // stays in line with every other strip's.
+            moveVolEl = el("div", "mixer-move-volume text-muted", "");
+            moveVolEl.title = "Move's own volume knob, after the master bus. Schwung can show it but not set it.";
+            level.insertBefore(moveVolEl, level.firstChild);
+            strip.appendChild(level);
             var btns = el("div", "mixer-buttons");
             btns.appendChild(toggle(null, "master_fx:muted", "M", "Mute the master bus", "mixer-mute"));
             var byp = toggle(null, "master_fx:chain_bypassed", "FX", "Bypass all Master FX", "mixer-bypass");

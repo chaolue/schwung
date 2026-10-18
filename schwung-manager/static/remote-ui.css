@@ -1392,6 +1392,7 @@
 .mixer-move-volume {
     font-size: 0.65rem;
     text-align: center;
+    white-space: nowrap;   /* one line, even in a phone's narrow Master strip */
 }
 
 /* A return's fader with its mute under it. */
@@ -1438,9 +1439,10 @@
         gap: 6px;
     }
 
-    .mixer-returns,
-    .mixer-master {
-        grid-column: 1 / -1;
+    /* Returns and Master share a row, as they do at tablet width: the
+       returns across three columns, the Master strip in the fourth. */
+    .mixer-returns {
+        grid-column: 1 / 4;
     }
 
     .mixer-strip {
