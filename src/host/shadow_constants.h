@@ -889,6 +889,20 @@ typedef struct shadow_control_t {
      * step_menu_len_c / step_menu_vel are the minimum, these the maximum. */
     volatile uint8_t step_menu_vel_max;
     volatile uint16_t step_menu_len_max_c;
+    /*
+     * THE BATTERY, as the XMOS reports it (power_state.h). The shim watches
+     * MIDI_IN for the power SysEx and fills these; it writes them nowhere
+     * else, and nothing else writes them. `battery_level` is 0..100, or
+     * POWER_LEVEL_UNKNOWN until the first report -- which can take minutes
+     * after a restart, so a reader falls back to Move's syslog line (see
+     * js_host_battery). `power_flags` is the report's flags byte, RAW: its
+     * bits are not decoded yet. `power_seq` bumps on every report.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t battery_level;
+    volatile uint8_t power_flags;
+    volatile uint8_t power_seq;
 } shadow_control_t;
 
 #define SM_CELL_EMPTY 255

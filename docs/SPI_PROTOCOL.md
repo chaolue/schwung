@@ -200,6 +200,26 @@ Injecting too many MIDI events per frame causes SIGABRT. Safe limits:
 - SPI transfer blocks until hardware is ready (the ioctl itself takes ~2ms)
 - Frame budget after ioctl: ~900µs for all shim/host processing
 
+## Battery (XMOS power SysEx)
+
+The Move has no Linux power-supply driver (`/sys/class/power_supply` is empty).
+The XMOS reports the battery to Move as an Ableton SysEx on MIDI_IN, cable 0,
+about once per 1% change of charge:
+
+```
+F0 00 21 1D 01 01 3A <flags> <level> <x> F7
+```
+
+Captured 2026-10-18 with `log_xmos_sysex_on` as `F0 00 21 1D 01 01 3A 21 19 00
+F7`, in the same second Move logged `PowerState{ isPsuConnected: true,
+chargingState: charging, batteryCharge: 25, ... }` to `/var/log/messages`.
+`<level>` is the charge in percent. `<flags>` was `0x21` charging on the
+charger; its bits are **not decoded** — a capture on battery is needed. The
+shim watches for the message in its ungated MIDI_IN scan and publishes it in
+`shadow_control_t` (`battery_level`, `power_flags`, `power_seq`); it is not
+consumed, so Move still gets it. Parser and tests: `src/host/power_state.h`,
+`tests/host/test_power_state.c`. JS reads it with `host_battery()`.
+
 ## USB-C Audio-Out Source (XMOS audio-IO SysEx)
 
 Moved here from `CLAUDE.md`, which keeps a summary. This is the `37 12` /

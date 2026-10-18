@@ -93,6 +93,7 @@ volatile int g_align_capture_slot = 0;
 #include "host/shadow_state.h"
 #include "host/shadow_xmos_audio.h"
 #include "host/xmos_resend.h"
+#include "host/power_state.h"      /* the battery, from the XMOS power SysEx */
 #include "host/shadow_midi.h"
 #include "host/shadow_overtake_midi.h"
 #include "host/ext_midi_ring.h"
@@ -6061,6 +6062,9 @@ static void shim_init_subsystems(void)
          * speaker reading has been stable for SPEAKER_EQ_STABLE_SEC. */
         speaker_eq_restart_clock(&speaker_eq);
         shadow_control->line_in_connected = 0; /* assume internal mic at boot; CC 114 will correct */
+        /* Unknown until the XMOS next reports it (power_state.h). */
+        shadow_control->battery_level = POWER_LEVEL_UNKNOWN;
+        shadow_control->power_flags = 0;
     }
 
     /* Precompute speaker-EQ biquad coefficients. SR is 44.1 kHz (Move's audio engine). */
@@ -9454,6 +9458,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t cin   = src_early[j] & 0x0F;
             uint8_t cable = (src_early[j] >> 4) & 0x0F;
             if (cable != 0x00) continue;
+            /* The XMOS's power report (power_state.h): watched, never
+             * consumed -- Move still gets it. Ungated for the same reason as
+             * the jack CCs: it comes about once per 1% of charge, so a missed
+             * one is minutes without a level. */
+            if (cin >= 0x04 && cin <= 0x07) {
+                static power_sysex_t power_rx;
+                power_report_t pr;
+                if (power_sysex_feed(&power_rx, src_early + j, &pr) && shadow_control) {
+                    shadow_control->power_flags = pr.flags;
+                    shadow_control->battery_level = pr.level;
+                    shadow_control->power_seq++;
+                }
+                continue;
+            }
             if (cin != 0x0B) continue;
             uint8_t status = src_early[j + 1];
             uint8_t d1     = src_early[j + 2];

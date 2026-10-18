@@ -316,6 +316,8 @@ Volume / settings: `host_get_volume`, `host_set_volume`, `host_get_setting/set_s
 
 Jack state (for feedback gate): `host_speaker_active()` (true = speakers, false = headphones), `host_line_in_connected()`.
 
+Battery: `host_battery()` → `{ level, source: "xmos"|"log", flags | charging }` or `null`. The Move has NO Linux power-supply driver; the XMOS reports the charge as an Ableton SysEx on MIDI_IN cable 0 (`F0 00 21 1D 01 01 3A <flags> <level> <x> F7`, `power_state.h`), which the shim watches and never consumes. Its `flags` byte is undecoded. Until the first report the level is Move's own syslog `PowerState{}` line.
+
 Display: `host_flush_display`, `host_set_refresh_rate(hz)`, `host_get_refresh_rate`.
 
 Filesystem: `host_file_exists`, `host_read_file`, `host_write_file`, `host_http_download`, `host_extract_tar(_strip)`, `host_ensure_dir`, `host_remove_dir`.

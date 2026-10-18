@@ -33,7 +33,8 @@
 #include "host/js_display.h"
 #include "host/shadow_constants.h"
 #include "host/ui_midi_out_ring.h"
-#include "host/param_feed.h"         /* the param change feed: shadow_param_changes() */   /* SPSC discipline for /schwung-midi-out */
+#include "host/param_feed.h"         /* the param change feed: shadow_param_changes() */
+#include "host/power_state.h"        /* host_battery(): the XMOS report, else Move's syslog */   /* SPSC discipline for /schwung-midi-out */
 #include "host/ui_midi_ring.h"       /* arrival order for /schwung-ui-midi */
 #include "host/shadow_shm_util.h"
 #include "host/e16_mirror_shm.h"
@@ -3660,6 +3661,70 @@ static JSValue js_host_line_in_connected(JSContext *ctx, JSValueConst this_val,
     return shadow_control->line_in_connected ? JS_TRUE : JS_FALSE;
 }
 
+/*
+ * The last PowerState line Move wrote to syslog, for host_battery() while the
+ * XMOS has not reported since the shim started (it reports about once per 1%,
+ * so that can be minutes). Only the TAIL of each file is read: the newest line
+ * is all we want and /var/log/messages runs to ~100 KB. messages.0 covers the
+ * moment just after a rotation. Re-read at most every 30 s, and only while the
+ * shim has no level of its own.
+ */
+#define BATTERY_LOG_TAIL 16384
+static power_log_t battery_log = { -1, -1, -1 };
+static uint64_t battery_log_read_us = 0;
+static int battery_log_tried = 0;
+
+static int battery_log_read_file(const char *path, power_log_t *out)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    static char buf[BATTERY_LOG_TAIL + 1];
+    off_t size = lseek(fd, 0, SEEK_END);
+    off_t from = size > BATTERY_LOG_TAIL ? size - BATTERY_LOG_TAIL : 0;
+    ssize_t n = (size > 0 && lseek(fd, from, SEEK_SET) == from) ? read(fd, buf, BATTERY_LOG_TAIL) : -1;
+    close(fd);
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+    return power_syslog_parse(buf, out);
+}
+
+static void battery_log_refresh(void)
+{
+    uint64_t now = shadow_param_now_us();
+    if (battery_log_tried && now - battery_log_read_us < 30000000ull) return;
+    battery_log_tried = 1;
+    battery_log_read_us = now;
+    power_log_t l;
+    if (battery_log_read_file("/var/log/messages", &l) ||
+        battery_log_read_file("/var/log/messages.0", &l))
+        battery_log = l;
+}
+
+/* host_battery() -> { level, source, flags | charging } | null.
+ * level is the charge in percent. source "xmos" is the controller's own report
+ * (shadow_control_t.battery_level, carrying its raw, UNDECODED `flags` byte);
+ * "log" is Move's last syslog line, used until the first report, carrying
+ * `charging` (true/false) when the line said. null = no level known at all. */
+static JSValue js_host_battery(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (shadow_control && shadow_control->battery_level <= 100) {
+        JSValue o = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, o, "level", JS_NewInt32(ctx, shadow_control->battery_level));
+        JS_SetPropertyStr(ctx, o, "source", JS_NewString(ctx, "xmos"));
+        JS_SetPropertyStr(ctx, o, "flags", JS_NewInt32(ctx, shadow_control->power_flags));
+        return o;
+    }
+    battery_log_refresh();
+    if (battery_log.level < 0) return JS_NULL;
+    JSValue o = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, o, "level", JS_NewInt32(ctx, battery_log.level));
+    JS_SetPropertyStr(ctx, o, "source", JS_NewString(ctx, "log"));
+    if (battery_log.charging >= 0)
+        JS_SetPropertyStr(ctx, o, "charging", battery_log.charging ? JS_TRUE : JS_FALSE);
+    return o;
+}
+
 /* host_get_module_metadata(id) -> object | null
  * Returns the parsed module.json contents for the given module id, or null
  * if not found. Used by feedback_gate to inspect capabilities/component_type. */
@@ -4066,6 +4131,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register host hardware-state query functions (feedback gate, etc.) */
     JS_SetPropertyStr(ctx, global_obj, "host_speaker_active", JS_NewCFunction(ctx, js_host_speaker_active, "host_speaker_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_line_in_connected", JS_NewCFunction(ctx, js_host_line_in_connected, "host_line_in_connected", 0));
+    JS_SetPropertyStr(ctx, global_obj, "host_battery", JS_NewCFunction(ctx, js_host_battery, "host_battery", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_get_module_metadata", JS_NewCFunction(ctx, js_host_get_module_metadata, "host_get_module_metadata", 1));
 
     /* Register sampler control functions */
