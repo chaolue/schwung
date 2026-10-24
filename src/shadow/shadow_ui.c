@@ -3670,7 +3670,7 @@ static JSValue js_host_line_in_connected(JSContext *ctx, JSValueConst this_val,
  * shim has no level of its own.
  */
 #define BATTERY_LOG_TAIL 16384
-static power_log_t battery_log = { -1, -1, -1 };
+static power_log_t battery_log = { -1, -1, -1, -1 };
 static uint64_t battery_log_read_us = 0;
 static int battery_log_tried = 0;
 
@@ -3700,11 +3700,13 @@ static void battery_log_refresh(void)
         battery_log = l;
 }
 
-/* host_battery() -> { level, source, flags | charging } | null.
+/* host_battery() -> { level, source, flags, charging, plugged } | null.
  * level is the charge in percent. source "xmos" is the controller's own report
- * (shadow_control_t.battery_level, carrying its raw, UNDECODED `flags` byte);
- * "log" is Move's last syslog line, used until the first report, carrying
- * `charging` (true/false) when the line said. null = no level known at all. */
+ * (shadow_control_t.battery_level, with its raw `flags` byte); "log" is Move's
+ * last syslog line, used until the first report. `charging` is true while it
+ * charges; `plugged` while on the charger, charging or full. From the report
+ * both come from the flags' low nibble (power_flags_state); from the log, when
+ * the line said. null = no level known at all. */
 static JSValue js_host_battery(JSContext *ctx, JSValueConst this_val,
                                int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
@@ -3713,6 +3715,10 @@ static JSValue js_host_battery(JSContext *ctx, JSValueConst this_val,
         JS_SetPropertyStr(ctx, o, "level", JS_NewInt32(ctx, shadow_control->battery_level));
         JS_SetPropertyStr(ctx, o, "source", JS_NewString(ctx, "xmos"));
         JS_SetPropertyStr(ctx, o, "flags", JS_NewInt32(ctx, shadow_control->power_flags));
+        int state = power_flags_state(shadow_control->power_flags);
+        JS_SetPropertyStr(ctx, o, "charging", state == POWER_STATE_CHARGING ? JS_TRUE : JS_FALSE);
+        JS_SetPropertyStr(ctx, o, "plugged",
+                          (state == POWER_STATE_CHARGING || state == POWER_STATE_FULL) ? JS_TRUE : JS_FALSE);
         return o;
     }
     battery_log_refresh();
@@ -3722,6 +3728,8 @@ static JSValue js_host_battery(JSContext *ctx, JSValueConst this_val,
     JS_SetPropertyStr(ctx, o, "source", JS_NewString(ctx, "log"));
     if (battery_log.charging >= 0)
         JS_SetPropertyStr(ctx, o, "charging", battery_log.charging ? JS_TRUE : JS_FALSE);
+    if (battery_log.psu >= 0)
+        JS_SetPropertyStr(ctx, o, "plugged", battery_log.psu ? JS_TRUE : JS_FALSE);
     return o;
 }
 

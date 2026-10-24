@@ -213,8 +213,10 @@ F0 00 21 1D 01 01 3A <flags> <level> <x> F7
 Captured 2026-10-18 with `log_xmos_sysex_on` as `F0 00 21 1D 01 01 3A 21 19 00
 F7`, in the same second Move logged `PowerState{ isPsuConnected: true,
 chargingState: charging, batteryCharge: 25, ... }` to `/var/log/messages`.
-`<level>` is the charge in percent. `<flags>` was `0x21` charging on the
-charger; its bits are **not decoded** — a capture on battery is needed. The
+`<level>` is the charge in percent. `<flags>`' low nibble is Move's
+`chargingState`: `0x21` charging on the charger, `0x22` fully charged on it
+(read from `shadow_control_t` while Move logged `fullyCharged`). The high
+nibble, and the value on battery, are not captured yet. The
 shim watches for the message in its ungated MIDI_IN scan and publishes it in
 `shadow_control_t` (`battery_level`, `power_flags`, `power_seq`); it is not
 consumed, so Move still gets it. Parser and tests: `src/host/power_state.h`,

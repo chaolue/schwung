@@ -9,6 +9,8 @@
  *     start was missed are refused;
  *   - non-SysEx packets in the middle of a message do not disturb it;
  *   - an oversized SysEx is ignored to its end and the next one still parses;
+ *   - the flags' low nibble reads as the charging state (0x21 charging, 0x22
+ *     full);
  *   - the LAST PowerState line in a syslog chunk wins, its fields are read,
  *     and a chunk without one, or with a cut-off line, is handled.
  */
@@ -157,10 +159,10 @@ static void test_syslog(void) {
     assert(power_syslog_parse(charging, &l) == 1);
     assert(l.level == 100 && l.psu == 1 && l.charging == 1);
 
-    /* "fullyCharged" and "notCharging" are not "charging". */
+    /* "fullyCharged" and "notCharging" are not "charging"; "fullyCharged" is full. */
     const char *full =
         "x PowerState{  isPsuConnected: true,  chargingState: fullyCharged,  batteryCharge: 100 }\n";
-    assert(power_syslog_parse(full, &l) == 1 && l.charging == 0);
+    assert(power_syslog_parse(full, &l) == 1 && l.charging == 0 && l.full == 1 && l.psu == 1);
 
     /* No line at all. */
     assert(power_syslog_parse("Oct 18 nothing here\n", &l) == 0 && l.level == -1);
@@ -178,8 +180,16 @@ static void test_syslog(void) {
     assert(power_syslog_parse(cut2, &l) == 1 && l.level == 41);
 }
 
+static void test_flags_state(void) {
+    /* Both captured on the charger: charging, then fully charged. */
+    assert(power_flags_state(0x21) == POWER_STATE_CHARGING);
+    assert(power_flags_state(0x22) == POWER_STATE_FULL);
+    assert(power_flags_state(0x00) != POWER_STATE_CHARGING && power_flags_state(0x00) != POWER_STATE_FULL);
+}
+
 int main(void) {
     test_captured_message();
+    test_flags_state();
     test_split_and_interleaved();
     test_refusals();
     test_oversized_then_valid();

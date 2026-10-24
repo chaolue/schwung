@@ -12,9 +12,11 @@
  *
  * Captured with log_xmos_sysex_on on 2026-10-18 as `F0 00 21 1D 01 01 3A 21 19
  * 00 F7`, in the same second Move logged "batteryCharge: 25". <level> is the
- * charge in percent. <flags> was 0x21 with the charger connected and charging;
- * its bits are not decoded yet (a capture on battery is needed), so it is
- * passed through raw and nothing may read a meaning into it.
+ * charge in percent. <flags>' low nibble is Move's chargingState: 0x21 while
+ * Move logged "chargingState: charging", 0x22 (read from shadow_control_t on
+ * 2026-10-24) while it logged "fullyCharged", both on the charger -- see
+ * power_flags_state. Its other bits, and the nibble on battery, are not
+ * captured yet: the byte is still passed through raw.
  *
  * The shim only WATCHES the message (power_sysex_feed below); it still goes to
  * Move untouched. Until the first one arrives -- up to a few minutes after a
@@ -53,6 +55,12 @@ typedef struct {
     uint8_t level;   /* 0..100 */
     uint8_t flags;   /* raw, undecoded */
 } power_report_t;
+
+/* <flags>' low nibble: Move's chargingState. Only these two are known (both
+ * on the charger); anything else -- on battery, presumably -- is neither. */
+#define POWER_STATE_CHARGING 1
+#define POWER_STATE_FULL     2
+static inline int power_flags_state(uint8_t flags) { return flags & 0x0F; }
 
 /* Validate a complete SysEx (F0 .. F7). */
 static inline int power_sysex_parse(const uint8_t *m, int len, power_report_t *out)
@@ -106,6 +114,7 @@ typedef struct {
     int level;      /* batteryCharge, 0..100; -1 = no line found */
     int psu;        /* isPsuConnected: 1/0, -1 unknown */
     int charging;   /* chargingState == charging: 1/0, -1 unknown */
+    int full;       /* chargingState == fullyCharged: 1/0, -1 unknown */
 } power_log_t;
 
 /* The value after `key` within [s, end), or NULL. */
@@ -131,6 +140,7 @@ static inline int power_syslog_parse(const char *text, power_log_t *out)
     out->level = -1;
     out->psu = -1;
     out->charging = -1;
+    out->full = -1;
     if (!text) return 0;
     const char *last = NULL;
     for (const char *p = strstr(text, "PowerState{"); p; p = strstr(p + 1, "PowerState{")) last = p;
@@ -145,8 +155,10 @@ static inline int power_syslog_parse(const char *text, power_log_t *out)
     out->level = level;
     if ((v = power_log_field(last, end, "isPsuConnected:")))
         out->psu = strncmp(v, "true", 4) == 0 ? 1 : 0;
-    if ((v = power_log_field(last, end, "chargingState:")))
+    if ((v = power_log_field(last, end, "chargingState:"))) {
         out->charging = strncmp(v, "charging", 8) == 0 && (v[8] == ',' || v[8] == ' ' || v[8] == '}') ? 1 : 0;
+        out->full = strncmp(v, "fullyCharged", 12) == 0 ? 1 : 0;
+    }
     return 1;
 }
 

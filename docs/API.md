@@ -191,7 +191,7 @@ host_remove_dir(path)         // Recursively remove directory, returns bool
 // Jack state and module metadata (used by feedback-protection gate)
 host_speaker_active()         // Returns bool - true when built-in speakers active (no headphones)
 host_line_in_connected()      // Returns bool - true when line-in cable plugged (vs internal mic)
-host_battery()                // Returns { level, source, flags | charging } or null - the battery charge
+host_battery()                // Returns { level, source, flags, charging, plugged } or null - the battery charge
 host_get_module_metadata(id)  // Returns parsed module.json object, or null if not installed
 
 // Network
@@ -434,7 +434,7 @@ unsupported-page fallback over them. Admit `PAGE_MENU` too.
 
 `host_line_in_connected()` — returns `true` when a line-in cable is plugged, `false` otherwise (internal mic active). Reflects XMOS CC 114 mic-in detect.
 
-`host_battery()` — the battery charge, as `{ level, source, ... }`, or `null` when no level is known. `level` is 0–100 percent. With `source: "xmos"` it is the Move controller's own report (about one per 1% change), and the object also carries `flags`, the report's raw flags byte — **not decoded yet; do not read a meaning into it**. Until the first report after a restart (which can take minutes), the level comes from the last `PowerState` line Move wrote to `/var/log/messages`, as `source: "log"`, with `charging: true/false` when that line said. Cheap to call every tick (a shared-memory read; the log is read at most every 30 s). See `src/host/power_state.h`.
+`host_battery()` — the battery charge, as `{ level, source, ... }`, or `null` when no level is known. `level` is 0–100 percent. With `source: "xmos"` it is the Move controller's own report (about one per 1% change), and the object also carries `flags`, the report's raw flags byte. Until the first report after a restart (which can take minutes), the level comes from the last `PowerState` line Move wrote to `/var/log/messages`, as `source: "log"`. `charging` is `true` while it charges, and `plugged` while it is on the charger (charging or full): from the report they come from the flags' low nibble (Move's `chargingState`: 1 charging, 2 full); from the log they are present only when the line said. Cheap to call every tick (a shared-memory read; the log is read at most every 30 s). See `src/host/power_state.h`.
 
 `host_get_module_metadata(id)` — returns the parsed `module.json` for the given module id, or `null` if the module isn't installed. Used by the feedback-protection gate to inspect `capabilities.audio_in` and `component_type`.
 
