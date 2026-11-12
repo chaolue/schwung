@@ -4419,6 +4419,11 @@ typedef struct host_api_v1 {
 } host_api_v1_t;
 ```
 
+**External means USB-A and the network.** A cable-2 packet sent with
+`midi_send_external` leaves the USB-A port and, when network MIDI is switched
+on, every connected RTP-MIDI session too; network input arrives as external
+(cable-2) MIDI. A module does nothing to opt in. See `docs/RTPMIDI.md`.
+
 **`get_bpm()` is steady.** On a steady tempo it returns the same value on every
 call, so it is safe to derive a delay time from it every block. Where it comes
 from, in order:

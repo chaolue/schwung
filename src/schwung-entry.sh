@@ -14,6 +14,20 @@ if [ -x "$DISPLAY_SRV" ]; then
     "$DISPLAY_SRV" >/dev/null 2>&1 &
 fi
 
+# Start the network MIDI (RTP-MIDI) sidecar -- OPT-IN: only when its config
+# file exists (an empty one is enough; see docs/RTPMIDI.md). Any instance left
+# from before a restart is replaced, so an edited config takes effect on the
+# next restart rather than the next power cycle, and two never fight over the
+# UDP ports. Started here, before MoveOriginal, so it never inherits the
+# shim's realtime priority.
+RTPMIDI_SRV="$SCHWUNG_DIR/schwung-rtpmidi"
+if [ -x "$RTPMIDI_SRV" ]; then
+    killall schwung-rtpmidi 2>/dev/null
+    if [ -f "$SCHWUNG_DIR/rtpmidi.conf" ]; then
+        "$RTPMIDI_SRV" >/dev/null 2>&1 &
+    fi
+fi
+
 # Start schwung-manager web UI if present (skip if already running)
 SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
 SCHWUNG_MGR_LOG="$SCHWUNG_DIR/schwung-manager.log"

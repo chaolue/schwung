@@ -63,6 +63,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_shadow_midi_out_capacity \
 	$(BUILD_DIR)/test_overtake_midi_route \
 	$(BUILD_DIR)/test_ext_midi_ring \
+	$(BUILD_DIR)/test_rtpmidi_proto \
 	$(BUILD_DIR)/test_ui_midi_out_carry \
 	$(BUILD_DIR)/test_ui_midi_out_ring \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
@@ -373,6 +374,10 @@ clean:
 # become the default goal, which is why .DEFAULT_GOAL is set above — without it
 # `make -C tests/host` built one target and said "up to date" for the rest.
 -include $(TARGETS:=.d)
+
+# Network MIDI: the RTP-MIDI wire format and the shim-side rings.
+$(BUILD_DIR)/test_rtpmidi_proto: test_rtpmidi_proto.c ../../src/host/rtpmidi_proto.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_rtpmidi_proto.c ../../src/host/rtpmidi_proto.c
 
 # Clip awareness. Both run from tests/fixtures/ because they read REAL Move
 # captures and a real Song.abl from there -- see the file headers for why the
