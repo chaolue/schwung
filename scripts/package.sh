@@ -64,6 +64,11 @@ if [ -f "./display-server" ]; then
     ITEMS="$ITEMS ./display-server"
 fi
 
+# Add the network MIDI sidecar if it was built
+if [ -f "./schwung-rtpmidi" ]; then
+    ITEMS="$ITEMS ./schwung-rtpmidi"
+fi
+
 # Add schwung-manager if it was built
 if [ -f "./schwung-manager" ]; then
     ITEMS="$ITEMS ./schwung-manager"

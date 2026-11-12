@@ -871,6 +871,24 @@ else
     echo "Skipping display server (up to date)"
 fi
 
+# Build the network MIDI sidecar (RTP-MIDI / AppleMIDI). Plain C, no external
+# dependency, so unlike link-subscriber there is nothing that can make this
+# step skippable -- and it must not become skippable: see docs/RTPMIDI.md.
+if needs_rebuild build/schwung-rtpmidi \
+    src/host/rtpmidi_daemon.c src/host/rtpmidi_proto.c src/host/rtpmidi_proto.h \
+    src/host/rtpmidi_shm.h src/host/unified_log.c src/host/unified_log.h; then
+    echo "Building network MIDI sidecar..."
+    "${CROSS_PREFIX}gcc" -g -O2 -Wall \
+        src/host/rtpmidi_daemon.c \
+        src/host/rtpmidi_proto.c \
+        src/host/unified_log.c \
+        -o build/schwung-rtpmidi \
+        -Isrc -Isrc/host \
+        -lrt -lpthread
+else
+    echo "Skipping network MIDI sidecar (up to date)"
+fi
+
 # Build JACK shadow driver (loaded by jackd when RNBO/JACK is used)
 if needs_rebuild build/lib/jack/jack_shadow.so \
     src/lib/jack2/shadow/JackShadowDriver.cpp \

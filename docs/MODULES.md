@@ -4198,6 +4198,11 @@ typedef struct host_api_v1 {
 } host_api_v1_t;
 ```
 
+**External means USB-A and the network.** A cable-2 packet sent with
+`midi_send_external` leaves the USB-A port and, when network MIDI is switched
+on, every connected RTP-MIDI session too; network input arrives as external
+(cable-2) MIDI. A module does nothing to opt in. See `docs/RTPMIDI.md`.
+
 **Tempo while stopped:** `get_bpm()` retains the last-playing transport's tempo
 after it stops (so a synced LFO that switches from phase-lock to free-run keeps
 the same rate). It updates from emitted clock, so changing an internal

@@ -93,6 +93,7 @@ volatile int g_align_capture_slot = 0;
 #include "host/shadow_midi.h"
 #include "host/shadow_overtake_midi.h"
 #include "host/ext_midi_ring.h"
+#include "host/rtpmidi_shm.h"
 #include "host/shadow_midi_filter.h"
 #include "host/fx_midi_filter.h"
 #include "host/shadow_shm_util.h"
@@ -4086,6 +4087,20 @@ static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shado
 static uint8_t last_shadow_midi_dsp_ready = 0;
 static shadow_midi_inject_t *shadow_midi_inject_shm = NULL;  /* MIDI inject into Move's MIDI_IN */
 static shadow_midi_inject_t *shadow_midi_inject_ui_shm = NULL;  /* shadow UI's own inject, never diverted to a module */
+/* Network MIDI (RTP-MIDI): two SPSC rings shared with the schwung-rtpmidi
+ * sidecar. See host/rtpmidi_shm.h and docs/RTPMIDI.md. */
+static rtpmidi_shm_t *rtpmidi_shm = NULL;
+static uint8_t rtpmidi_tap_prev[RTPMIDI_TAP_BYTES];
+/* Network packets delivered into MIDI_IN per frame. MIDI_IN holds 31 events
+ * and the hardware's own come first; 8 a frame is ~2750 packets/s, well clear
+ * of anything a controller or sequencer sends. */
+#define RTPMIDI_IN_PER_FRAME 8
+/* Packets the pre-ioctl half has shown and the post-ioctl half still owes.
+ * The two halves must deliver the SAME packets: the sidecar keeps pushing
+ * between them, so a post half that simply took "up to 8" would hand Move
+ * packets the pre-ioctl readers never saw, and a pre half that re-peeked a
+ * packet the post half could not place would show it to them twice. */
+static int rtpmidi_in_shown = 0;
 static schwung_ext_midi_remap_t *ext_midi_remap_shm = NULL;  /* Cable-2 channel remap table */
 static schwung_cc_claim_t *cc_claim_shm = NULL;               /* CC map: bound external CCs */
 
@@ -4672,6 +4687,14 @@ static void init_shadow_shm(void)
     if (shadow_midi_inject_ui_shm) {
         shadow_midi_inject_init(shadow_midi_inject_ui_shm);
     }
+
+    /* Network MIDI rings. NOT zeroed: the schwung-rtpmidi sidecar is started
+     * before us and may already be using the segment, and all-zero (what a
+     * fresh /dev/shm segment is) is a valid empty state anyway. With no
+     * sidecar running this stays an idle mapping: out_active is 0, so the
+     * MIDI_OUT tap queues nothing, and the in ring is empty. */
+    rtpmidi_shm = (rtpmidi_shm_t *)shadow_shm_map(RTPMIDI_SHM_NAME,
+                                                  sizeof(rtpmidi_shm_t), 1, 0);
 
     /* Create/open cable-2 channel remap shared memory (active overtake module writes,
      * shim reads on every SPI frame to rewrite cable-2 MIDI_IN channel byte). */
@@ -7067,6 +7090,18 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         shim_inject_as_hardware(shadow, hardware_mmap_addr, 0);
     }
 
+    /* NETWORK MIDI IN, the PEEK half -- same two-half contract as the test
+     * bus above, for the same reason: the pre-ioctl readers (the UI forward,
+     * the cable-2 slot dispatchers) run before the ioctl, the post-ioctl
+     * decoders and Move after it. Delivered as cable 2, so it takes every
+     * route USB-A external MIDI takes. No-op while the in ring is empty. */
+    if (rtpmidi_shm && hardware_mmap_addr && rtpmidi_in_shown == 0) {
+        rtpmidi_in_shown =
+            rtpmidi_deliver_midi_in(rtpmidi_shm, shadow + MIDI_IN_OFFSET,
+                                    hardware_mmap_addr + MIDI_IN_OFFSET,
+                                    SHADOW_MIDI_IN_BYTES, RTPMIDI_IN_PER_FRAME, 0);
+    }
+
     /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
     TIME_SECTION_START();
     shadow_forward_midi();
@@ -8042,6 +8077,14 @@ pre_done:
     if (surface_live_shm)
         surface_live_scan_out(surface_live_shm, &surface_live_writer,
                               shadow + MIDI_OUT_OFFSET, HW_MIDI_OUT_SIZE);
+    /* NETWORK MIDI OUT: a READER of the final region, not a writer, so the
+     * rule above stands. Every cable-2 packet about to leave USB-A is also
+     * queued for the schwung-rtpmidi sidecar -- whoever produced it (an
+     * overtake DSP, the chain, JS, Move's own tracks). One atomic load and a
+     * 20-slot compare while no session is up; never a syscall. */
+    if (rtpmidi_shm)
+        rtpmidi_tap_midi_out(rtpmidi_shm, rtpmidi_tap_prev,
+                             shadow + MIDI_OUT_OFFSET);
     xmos_log_slots("PREEND", shadow + MIDI_OUT_OFFSET, xmos_frame < 6000);
 }
 
@@ -8449,6 +8492,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * shim_pre_transfer. */
     if (shadow_control && shadow_control->inject_as_hardware && hw) {
         shim_inject_as_hardware(shadow, (uint8_t *)hw, 1);
+    }
+
+    /* NETWORK MIDI IN, the POP half. Both buffers, so Move and Schwung's own
+     * post-ioctl scans (overtake feed, cable-2 remap, filters) agree on what
+     * arrived. First empty slot only -- a zeroed slot is a terminator. */
+    if (rtpmidi_shm && hw && rtpmidi_in_shown > 0) {
+        rtpmidi_in_shown -=
+            rtpmidi_deliver_midi_in(rtpmidi_shm, shadow + MIDI_IN_OFFSET,
+                                    (uint8_t *)hw + MIDI_IN_OFFSET,
+                                    SHADOW_MIDI_IN_BYTES, rtpmidi_in_shown, 1);
     }
 
     /*

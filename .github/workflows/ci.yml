@@ -99,6 +99,7 @@ jobs:
             build/schwung \
             build/schwung-shim.so \
             build/display-server \
+            build/schwung-rtpmidi \
             build/modules/chain/dsp.so \
             build/modules/audio_fx/freeverb/freeverb.so \
             build/modules/midi_fx/chord/dsp.so \
@@ -180,6 +181,9 @@ jobs:
           # is where a silent skip actually reaches users.
           tar -tzf schwung.tar.gz | grep -q 'schwung/link-subscriber$' || {
             echo "tarball has no link-subscriber — Move->Schwung audio would be dead"; exit 1; }
+          # The network MIDI sidecar is added the same "if it was built" way.
+          tar -tzf schwung.tar.gz | grep -q 'schwung/schwung-rtpmidi$' || {
+            echo "tarball has no schwung-rtpmidi — network MIDI would silently not start"; exit 1; }
           # Same reasoning, same silent skip: install.sh's manager rebuild was
           # guarded on `command -v go`, so a Docker-only machine shipped
           # whatever manager was already in the tarball and said "success". The
