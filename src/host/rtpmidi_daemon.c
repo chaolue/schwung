@@ -41,6 +41,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -66,6 +67,7 @@ typedef struct {
     int state;
     int initiator;                  /* a configured peer= ; never freed */
     struct sockaddr_in ctrl, data;
+    struct in_addr local;           /* OUR address this peer talks to; 0 = any */
     uint32_t ssrc;                  /* theirs */
     uint32_t token;
     uint64_t last_rx_ms;
@@ -118,9 +120,42 @@ static const char *addr_str(const struct sockaddr_in *a, char *buf, size_t n)
     return buf;
 }
 
-static void send_to(int fd, const struct sockaddr_in *to, const uint8_t *b, int n)
+/* Send FROM `local` when it is set.
+ *
+ * The sockets are bound to every interface, and an unbound send takes its
+ * source address from the ROUTE to the peer, not from the address the peer
+ * contacted. A Move reached at 172.16.254.1 (USB) by a host it routes to over
+ * Wi-Fi therefore answered from its Wi-Fi address -- and an RTP-MIDI client
+ * matches the reply against the address it invited, so the session never came
+ * up, with the daemon logging nothing because from its side nothing failed.
+ * Measured 2026-11-13. `local` is the destination address of what the peer
+ * sent us (IP_PKTINFO), so every reply leaves from the address it was sent to. */
+static void send_to(int fd, const struct sockaddr_in *to, struct in_addr local,
+                    const uint8_t *b, int n)
 {
-    if (n > 0) sendto(fd, b, (size_t)n, 0, (const struct sockaddr *)to, sizeof(*to));
+    if (n <= 0) return;
+    struct iovec iov = { .iov_base = (void *)b, .iov_len = (size_t)n };
+    struct msghdr m;
+    char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+    memset(&m, 0, sizeof(m));
+    m.msg_name = (void *)to;
+    m.msg_namelen = sizeof(*to);
+    m.msg_iov = &iov;
+    m.msg_iovlen = 1;
+    if (local.s_addr != 0) {
+        memset(cbuf, 0, sizeof(cbuf));
+        m.msg_control = cbuf;
+        m.msg_controllen = sizeof(cbuf);
+        struct cmsghdr *c = CMSG_FIRSTHDR(&m);
+        c->cmsg_level = IPPROTO_IP;
+        c->cmsg_type = IP_PKTINFO;
+        c->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
+        struct in_pktinfo pi;
+        memset(&pi, 0, sizeof(pi));
+        pi.ipi_spec_dst = local;
+        memcpy(CMSG_DATA(c), &pi, sizeof(pi));
+    }
+    sendmsg(fd, &m, 0);
 }
 
 static void peer_set_state(peer_t *p, int state)
@@ -164,7 +199,7 @@ static void peer_down(peer_t *p, const char *why, int say_bye)
             uint8_t b[32];
             int n = rtpmidi_cmd_build_session(b, sizeof(b), RTPMIDI_CMD_BY,
                                               p->token, g_ssrc, NULL);
-            send_to(g_ctrl_fd, &p->ctrl, b, n);
+            send_to(g_ctrl_fd, &p->ctrl, p->local, b, n);
         }
     }
     if (p->initiator) {
@@ -216,12 +251,12 @@ static void in_bytes(void *ctx, const uint8_t *bytes, int n)
 
 /* ---- session commands --------------------------------------------------- */
 
-static void reply_session(int fd, const struct sockaddr_in *to, uint16_t cmd,
-                          uint32_t token)
+static void reply_session(int fd, const struct sockaddr_in *to,
+                          struct in_addr local, uint16_t cmd, uint32_t token)
 {
     uint8_t b[16 + RTPMIDI_NAME_MAX];
     int n = rtpmidi_cmd_build_session(b, sizeof(b), cmd, token, g_ssrc, g_name);
-    send_to(fd, to, b, n);
+    send_to(fd, to, local, b, n);
 }
 
 static void send_sync(peer_t *p, uint8_t count, const uint64_t ts[3],
@@ -229,12 +264,12 @@ static void send_sync(peer_t *p, uint8_t count, const uint64_t ts[3],
 {
     uint8_t b[36];
     int n = rtpmidi_cmd_build_ck(b, sizeof(b), g_ssrc, count, ts);
-    send_to(g_data_fd, to, b, n);
+    send_to(g_data_fd, to, p->local, b, n);
     p->last_sync_ms = now_ms();
 }
 
 static void handle_cmd(int is_data, const rtpmidi_cmd_t *c,
-                       const struct sockaddr_in *from)
+                       const struct sockaddr_in *from, struct in_addr local)
 {
     int fd = is_data ? g_data_fd : g_ctrl_fd;
     peer_t *p;
@@ -245,29 +280,30 @@ static void handle_cmd(int is_data, const rtpmidi_cmd_t *c,
         if (p && p->initiator) {
             /* A host we invite has invited us. One session is enough; ours
              * is already under way or up, so decline theirs. */
-            reply_session(fd, from, RTPMIDI_CMD_NO, c->token);
+            reply_session(fd, from, local, RTPMIDI_CMD_NO, c->token);
             return;
         }
         if (!p) p = peer_alloc();
         if (!p) {
-            reply_session(fd, from, RTPMIDI_CMD_NO, c->token);
+            reply_session(fd, from, local, RTPMIDI_CMD_NO, c->token);
             return;
         }
         p->ssrc = c->ssrc;
         p->token = c->token;
+        p->local = local;
         p->last_rx_ms = now_ms();
         snprintf(p->name, sizeof(p->name), "%s", c->name);
         if (!is_data) {
             p->ctrl = *from;
             if (p->state != P_UP) peer_set_state(p, P_WAIT_DATA);
-            reply_session(fd, from, RTPMIDI_CMD_OK, c->token);
+            reply_session(fd, from, local, RTPMIDI_CMD_OK, c->token);
         } else {
             p->data = *from;
             if (p->state == P_FREE) {           /* data before control */
                 p->ctrl = *from;
                 p->ctrl.sin_port = htons((uint16_t)(ntohs(from->sin_port) - 1));
             }
-            reply_session(fd, from, RTPMIDI_CMD_OK, c->token);
+            reply_session(fd, from, local, RTPMIDI_CMD_OK, c->token);
             if (p->state != P_UP) peer_up(p);
         }
         return;
@@ -277,12 +313,13 @@ static void handle_cmd(int is_data, const rtpmidi_cmd_t *c,
             p = peer_by_token(c->token, P_INVITE_CTRL);
             if (!p) return;
             p->ssrc = c->ssrc;
+            p->local = local;       /* the address our invitation left from */
             snprintf(p->name, sizeof(p->name), "%s", c->name);
             peer_set_state(p, P_INVITE_DATA);
             uint8_t b[16 + RTPMIDI_NAME_MAX];
             int n = rtpmidi_cmd_build_session(b, sizeof(b), RTPMIDI_CMD_IN,
                                               p->token, g_ssrc, g_name);
-            send_to(g_data_fd, &p->data, b, n);
+            send_to(g_data_fd, &p->data, p->local, b, n);
         } else {
             p = peer_by_token(c->token, P_INVITE_DATA);
             if (!p) return;
@@ -307,6 +344,7 @@ static void handle_cmd(int is_data, const rtpmidi_cmd_t *c,
         p = peer_by_ssrc(c->ssrc);
         if (!p || p->state != P_UP) return;
         p->last_rx_ms = now_ms();
+        p->local = local;
         if (c->count == 0) {
             uint64_t ts[3] = { c->ts[0], now_100us(), 0 };
             send_sync(p, 1, ts, from);
@@ -327,14 +365,31 @@ static void handle_socket(int is_data)
     for (int burst = 0; burst < 64; burst++) {
         uint8_t buf[2048];
         struct sockaddr_in from;
-        socklen_t flen = sizeof(from);
-        ssize_t n = recvfrom(fd, buf, sizeof(buf), MSG_DONTWAIT,
-                             (struct sockaddr *)&from, &flen);
+        struct in_addr local = { 0 };
+        struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) };
+        char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+        struct msghdr m;
+        memset(&m, 0, sizeof(m));
+        m.msg_name = &from;
+        m.msg_namelen = sizeof(from);
+        m.msg_iov = &iov;
+        m.msg_iovlen = 1;
+        m.msg_control = cbuf;
+        m.msg_controllen = sizeof(cbuf);
+        ssize_t n = recvmsg(fd, &m, MSG_DONTWAIT);
         if (n <= 0) return;
+        /* Which of OUR addresses this was sent to -- see send_to(). */
+        for (struct cmsghdr *c = CMSG_FIRSTHDR(&m); c; c = CMSG_NXTHDR(&m, c)) {
+            if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO) {
+                struct in_pktinfo pi;
+                memcpy(&pi, CMSG_DATA(c), sizeof(pi));
+                local = pi.ipi_addr;
+            }
+        }
 
         rtpmidi_cmd_t c;
         if (rtpmidi_cmd_parse(buf, (int)n, &c)) {
-            handle_cmd(is_data, &c, &from);
+            handle_cmd(is_data, &c, &from, local);
             continue;
         }
         if (!is_data || n < 12) continue;
@@ -371,7 +426,7 @@ static void run_timers(void)
                 uint8_t b[16 + RTPMIDI_NAME_MAX];
                 int n = rtpmidi_cmd_build_session(b, sizeof(b), RTPMIDI_CMD_IN,
                                                   p->token, g_ssrc, g_name);
-                send_to(g_ctrl_fd, &p->ctrl, b, n);
+                send_to(g_ctrl_fd, &p->ctrl, p->local, b, n);
             }
             break;
         case P_INVITE_CTRL:
@@ -397,7 +452,7 @@ static void run_timers(void)
             if (p->rs_due && t - p->last_rs_ms >= RS_PERIOD_MS) {
                 uint8_t b[12];
                 int n = rtpmidi_cmd_build_rs(b, sizeof(b), g_ssrc, p->last_seq_in);
-                send_to(g_ctrl_fd, &p->ctrl, b, n);
+                send_to(g_ctrl_fd, &p->ctrl, p->local, b, n);
                 p->rs_due = 0;
                 p->last_rs_ms = t;
             }
@@ -418,7 +473,7 @@ static void flush_pkt(rtpmidi_pkt_t *pkt)
             peer_t *p = &g_peers[i];
             if (p->state != P_UP) continue;
             int n = rtpmidi_pkt_finish(pkt, p->seq_out++, ts, g_ssrc);
-            send_to(g_data_fd, &p->data, pkt->buf, n);
+            send_to(g_data_fd, &p->data, p->local, pkt->buf, n);
         }
     }
     rtpmidi_pkt_begin(pkt);
@@ -533,6 +588,9 @@ static int open_udp(int port)
     if (fd < 0) return -1;
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    /* Report each datagram's destination address, so replies can leave from
+     * it. See send_to(). */
+    setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
     struct sockaddr_in a;
     memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET;

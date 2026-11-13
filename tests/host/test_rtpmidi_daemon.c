@@ -168,6 +168,29 @@ int main(int argc, char **argv)
     CHECK(recv_cmd(i_data, RTPMIDI_CMD_CK, &c, &from, 2000) && c.count == 1 && c.ts[0] == 42, "responder answers CK0 with CK1");
     CHECK(wait_flag(&shm->peers, 2, 2000), "two sessions up");
 
+    /* ---- a reply leaves from the address the peer CONTACTED ----
+     * The daemon is bound to every interface, so an unbound reply takes its
+     * source from the route back -- on a Move reached at its USB address by a
+     * host it routes to over Wi-Fi, the Wi-Fi address, which the client does
+     * not recognise as the session it invited. 127.0.0.2 is a second local
+     * address on any Linux loopback: invited there, the answer must come from
+     * there and not from 127.0.0.1. */
+    {
+        int a_fd = udp_bind(base + 30);
+        struct sockaddr_in alt = lo(base);
+        alt.sin_addr.s_addr = htonl(0x7F000002);
+        n = rtpmidi_cmd_build_session(b, sizeof(b), RTPMIDI_CMD_IN, 0x99, 0xA17E0001, "alt");
+        send_to(a_fd, alt, b, n);
+        CHECK(recv_cmd(a_fd, RTPMIDI_CMD_OK, &c, &from, 2000), "invitation to a second local address accepted");
+        CHECK(from.sin_addr.s_addr == htonl(0x7F000002), "reply source is the address invited (got %s)",
+              inet_ntoa(from.sin_addr));
+        n = rtpmidi_cmd_build_session(b, sizeof(b), RTPMIDI_CMD_BY, 0x99, 0xA17E0001, NULL);
+        send_to(a_fd, alt, b, n);
+        close(a_fd);
+        usleep(50000);
+        CHECK(wait_flag(&shm->peers, 2, 2000), "still two sessions up");
+    }
+
     /* ---- shim -> network: both peers get it, SysEx reassembled ---- */
     const uint8_t out_pkts[][4] = {
         {0x29, 0x90, 60, 100}, {0x2F, 0xF8, 0, 0},
